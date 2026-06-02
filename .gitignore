@@ -1,0 +1,45 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.Python
+
+# Virtual environments
+venv/
+.venv/
+env/
+
+# Environment files
+.env
+.env.local
+backend/.env
+
+# YOLO / Ultralytics outputs and weights
+runs/
+*.pt
+yolov8n.pt
+
+# Sample/cached files
+bus.jpg
+
+# Backend uploads
+backend/uploads/*
+!backend/uploads/.gitkeep
+
+# AI model outputs / datasets (large)
+ai-model/outputs/*
+!ai-model/outputs/.gitkeep
+ai-model/datasets/*
+!ai-model/datasets/.gitkeep
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
