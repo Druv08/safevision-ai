@@ -43,3 +43,10 @@ Thumbs.db
 
 # Logs
 *.log
+
+# Dataset files
+ai-model/datasets/raw/
+ai-model/datasets/processed/
+*.zip
+*.pt
+runs/
