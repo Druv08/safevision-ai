@@ -61,3 +61,45 @@ person 0 · helmet 16 · no_helmet 0 · vest 16 · no_vest 18 (total 50 detectio
 - Integrate `safevision_yolov8n_5class_v2/weights/best.pt` into FastAPI backend
 - Add `/predict` endpoint accepting an uploaded image
 - Return JSON with detections (class, conf, bbox) + optional annotated image
+
+---
+
+## Day 5 — Local Video & Webcam Detection Pipeline
+
+### Completed
+- [x] Wrote local inference script `ai-model/inference/video_detection.py` (OpenCV + Ultralytics)
+  - Supports `--source 0` (webcam, default) or a video file path
+  - `--conf` flag (default 0.25), `--save` flag, `--model` flag
+  - On-frame HUD: smoothed FPS + live per-class counts
+  - Color-coded boxes: green for `vest`/`helmet`, red for `no_vest`/`no_helmet`
+  - Press `q` (or close window) to quit cleanly; final per-class totals printed
+  - `try/except/finally` ensures `cap.release()` + `writer.release()` always run
+- [x] Created folders: `ai-model/test-videos/` (with `.gitkeep`) and `ai-model/outputs/video-detections/`
+- [x] Updated `.gitignore` to exclude `*.mp4`, `*.avi`, `*.mov`, `*.mkv`, `ai-model/test-videos/*`, `ai-model/outputs/video-detections/`
+- [x] Webcam test at `--conf 0.25` (6,861 frames, ~25.8 FPS smoothed) — `vest` + `no_vest` detected live, no errors
+- [x] Video file test on a 2560×1524 screen recording at `--conf 0.4 --save` — annotated MP4 saved successfully
+
+### Performance
+| Run                | Resolution  | Frames | Avg FPS |
+|--------------------|-------------|-------:|--------:|
+| Webcam @ conf 0.25 | 640×480     |  6,861 |  ~25.8  |
+| Video  @ conf 0.40 | 2560×1524   |    812 |   13.5  |
+
+### Detection counts (per-frame rate at conf 0.25 vs 0.40)
+| Class     | Webcam 0.25 | Video 0.40 |
+|-----------|------------:|-----------:|
+| person    | 0           | 0          |
+| helmet    | 0           | 0          |
+| no_helmet | 0           | 0          |
+| vest      | 321         | 433        |
+| no_vest   | 6,823       | 268        |
+
+`no_vest` per-frame rate dropped from **~0.99 → ~0.33** when threshold was raised — confirming that `--conf 0.4` is a much cleaner default for live deployment.
+
+### Issues Faced
+- `person`, `helmet`, `no_helmet` did not fire in webcam/screen-recording footage — matches the v2 training weakness (data-starved classes), not a pipeline bug
+- At `--conf 0.25`, `no_vest` was overactive on plain desk backgrounds — fixed by raising threshold to 0.4
+
+### Next Day Plan (Day 6)
+- Begin backend integration: `/predict` endpoint serving `best.pt`
+- Decide whether to train a v3 with class-balanced sampling to fix the `person`/`helmet` weakness, or move forward with v2 + post-processing rules

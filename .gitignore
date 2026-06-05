@@ -50,3 +50,12 @@ ai-model/datasets/processed/
 *.zip
 *.pt
 runs/
+
+# Local test videos and detection output videos (never committed)
+ai-model/test-videos/*
+!ai-model/test-videos/.gitkeep
+ai-model/outputs/video-detections/
+*.mp4
+*.avi
+*.mov
+*.mkv
