@@ -3,13 +3,15 @@ SafeVision AI - Day 5
 Local video / webcam PPE detection using TWO YOLOv8 models in parallel:
 
   1. SafeVision PPE model  (trained, 5 classes: person/helmet/no_helmet/vest/no_vest)
-     -> used for vest / no_vest / helmet / no_helmet boxes + counts
+     -> Detects PPE only: vest / no_vest / helmet / no_helmet boxes + counts.
 
-  2. COCO yolov8n.pt person detector
-     -> used ONLY for the worker (human) count, because the SafeVision model's
-        own `person` class is data-starved and rarely fires. Counting workers
-        from a held-up vest gives wrong results, so we do it from a real,
-        general-purpose person detector instead.
+  2. YOLOv8 POSE model  (yolov8n-pose.pt, COCO pretrained)
+     -> Detects real humans/workers by predicting body keypoints (nose,
+        shoulders, hips, etc.). A worker is only counted when the model
+        finds enough body keypoints, so a shirt hanging on a chair or a
+        person-shaped poster will NOT inflate the workers count -- a plain
+        bounding-box detector (yolov8n.pt) would happily count those as
+        people, which is exactly the false-positive problem we hit on Day 5.
 
 Usage:
     # Webcam (default)
@@ -19,7 +21,7 @@ Usage:
     python ai-model/inference/video_detection.py --source path/to/video.mp4 --save
 
     # Custom thresholds
-    python ai-model/inference/video_detection.py --conf 0.4 --person-conf 0.4
+    python ai-model/inference/video_detection.py --conf 0.4 --pose-conf 0.5
 
 Press 'q' in the video window to quit.
 
@@ -29,6 +31,13 @@ SafeVision PPE classes (v2 model):
     2 = no_helmet
     3 = vest
     4 = no_vest
+
+COCO pose keypoint indices (used by yolov8n-pose.pt):
+    0  = nose
+    5  = left_shoulder    6  = right_shoulder
+    11 = left_hip         12 = right_hip
+    (full set is 17 keypoints; the five above are the ones we trust most
+     for deciding 'this is a real upright human'.)
 """
 
 import argparse
@@ -38,6 +47,7 @@ from datetime import datetime
 from pathlib import Path
 
 import cv2
+import numpy as np
 from ultralytics import YOLO
 
 
@@ -57,30 +67,46 @@ DEFAULT_MODEL = (
 OUTPUT_DIR = PROJECT_ROOT / "ai-model" / "outputs" / "video-detections"
 
 
-def _find_default_person_model() -> str:
-    """Locate a local copy of yolov8n.pt; fall back to the bare name.
+def _find_default_pose_model() -> str:
+    """Locate a local copy of yolov8n-pose.pt; fall back to the bare name.
 
-    Ultralytics will auto-download `yolov8n.pt` on first use if no file is
-    found, so returning the bare name is always a safe fallback.
+    Ultralytics will auto-download `yolov8n-pose.pt` on first use if no file
+    is found locally, so returning the bare name is always a safe fallback.
     """
     candidates = [
-        PROJECT_ROOT / "yolov8n.pt",            # repo root
-        PROJECT_ROOT.parent / "yolov8n.pt",     # parent (existing copy)
-        Path.cwd() / "yolov8n.pt",
+        PROJECT_ROOT / "yolov8n-pose.pt",            # repo root
+        PROJECT_ROOT.parent / "yolov8n-pose.pt",     # parent
+        Path.cwd() / "yolov8n-pose.pt",
     ]
     for c in candidates:
         if c.exists():
             return str(c)
-    return "yolov8n.pt"
+    return "yolov8n-pose.pt"
 
 
-DEFAULT_PERSON_MODEL = _find_default_person_model()
+DEFAULT_POSE_MODEL = _find_default_pose_model()
 
-# COCO class id for a person (yolov8n.pt was trained on COCO)
-COCO_PERSON_CLASS_ID = 0
-
-# Color used to draw COCO person/worker boxes (BGR). Distinct from PPE colors.
+# Color used to draw worker boxes (BGR). Distinct from PPE colors.
 WORKER_BOX_COLOR = (255, 200, 0)   # cyan-ish blue
+
+# Default per-keypoint confidence threshold. A keypoint is counted as
+# "reliably visible" only when its confidence is >= this value.
+KEYPOINT_CONF_THRESHOLD = 0.4
+
+# Important COCO keypoint indices used to decide "is this really a person?".
+# A hanging shirt may produce a person-shaped box, but it will almost never
+# produce a confident nose/shoulders/hips combination.
+IMPORTANT_KEYPOINTS = {
+    0:  "nose",
+    5:  "left_shoulder",
+    6:  "right_shoulder",
+    11: "left_hip",
+    12: "right_hip",
+}
+
+# Need at least this many of the important keypoints above to be visible
+# before we accept the detection as a real worker.
+MIN_IMPORTANT_KEYPOINTS = 3
 
 # Class id -> human-readable name (must match v2 model training order)
 CLASS_NAMES = {
@@ -121,10 +147,10 @@ def parse_args() -> argparse.Namespace:
         help="PPE-model confidence threshold (default: 0.25)",
     )
     parser.add_argument(
-        "--person-conf",
+        "--pose-conf",
         type=float,
-        default=0.4,
-        help="COCO person-detector confidence threshold (default: 0.4)",
+        default=0.5,
+        help="YOLO pose person-box confidence threshold (default: 0.5)",
     )
     parser.add_argument(
         "--save",
@@ -137,9 +163,9 @@ def parse_args() -> argparse.Namespace:
         help="Path to SafeVision PPE YOLO weights (default: v2 best.pt)",
     )
     parser.add_argument(
-        "--person-model",
-        default=DEFAULT_PERSON_MODEL,
-        help="Path to COCO YOLOv8 weights for person detection (default: yolov8n.pt)",
+        "--pose-model",
+        default=DEFAULT_POSE_MODEL,
+        help="Path to YOLOv8 pose weights for worker detection (default: yolov8n-pose.pt)",
     )
     return parser.parse_args()
 
@@ -198,23 +224,95 @@ def draw_detections(frame, result, counts: dict) -> None:
         counts[name] = counts.get(name, 0) + 1
 
 
-def draw_person_detections(frame, result) -> int:
-    """Draw 'worker' boxes for COCO person detections and return the count.
+def is_valid_worker_pose(
+    keypoints_conf,
+    keypoint_conf_threshold: float = KEYPOINT_CONF_THRESHOLD,
+    min_important: int = MIN_IMPORTANT_KEYPOINTS,
+) -> bool:
+    """Decide whether a single pose detection looks like a real human.
 
-    Only keeps boxes whose class id is COCO_PERSON_CLASS_ID (0). The label
-    drawn on each box is 'worker' (not 'person') to match the overlay row.
+    Why this exists:
+        A plain object detector (e.g. yolov8n.pt) sometimes labels a shirt
+        hanging on a chair as `person` with surprisingly high confidence,
+        which inflates the workers count. A pose model is much better at
+        rejecting these false positives because clothing-on-a-hanger does
+        NOT have a confident nose + shoulders + hips pattern.
+
+    How it works:
+        We look at five "important" COCO keypoints (nose, left/right
+        shoulder, left/right hip). If at least `min_important` of those
+        have per-keypoint confidence >= `keypoint_conf_threshold`, we
+        accept the detection as a real worker.
+
+    Args:
+        keypoints_conf: 1-D array-like of length 17 with per-keypoint
+                        confidence scores for one person, as returned by
+                        Ultralytics (`result.keypoints.conf[i]`).
+        keypoint_conf_threshold: A keypoint is "visible" if its confidence
+                        is at least this value (default 0.4).
+        min_important: How many of the important keypoints must be visible
+                        (default 3 out of 5).
+
+    Returns:
+        True if the detection passes the keypoint sanity check.
+    """
+    if keypoints_conf is None:
+        return False
+    arr = np.asarray(keypoints_conf).flatten()
+    # Defensive: pose model should return 17 keypoints per person.
+    if arr.size < max(IMPORTANT_KEYPOINTS) + 1:
+        return False
+
+    visible = 0
+    for idx in IMPORTANT_KEYPOINTS:
+        if arr[idx] >= keypoint_conf_threshold:
+            visible += 1
+    return visible >= min_important
+
+
+def draw_worker_poses(
+    frame,
+    result,
+    pose_conf: float,
+    keypoint_conf_threshold: float = KEYPOINT_CONF_THRESHOLD,
+) -> int:
+    """Draw 'worker' boxes for VALID pose detections and return the count.
+
+    A detection is only drawn / counted when BOTH of these are true:
+        1. The pose model's person-box confidence is >= `pose_conf`.
+        2. At least MIN_IMPORTANT_KEYPOINTS of the important keypoints
+           (nose, shoulders, hips) are visible with confidence
+           >= `keypoint_conf_threshold` (see `is_valid_worker_pose`).
+
+    This is what lets us reject a shirt on a chair: the box may exist with
+    decent confidence, but the keypoints will not line up with a real body.
     """
     if result.boxes is None or len(result.boxes) == 0:
+        return 0
+    if result.keypoints is None:
         return 0
 
     boxes = result.boxes.xyxy.cpu().numpy()
     confs = result.boxes.conf.cpu().numpy()
-    cls_ids = result.boxes.cls.cpu().numpy().astype(int)
+
+    # Keypoint confidences: shape (N_people, 17)
+    kp_conf_all = result.keypoints.conf
+    if kp_conf_all is None:
+        return 0
+    kp_conf_all = kp_conf_all.cpu().numpy()
 
     n_workers = 0
-    for (x1, y1, x2, y2), conf, cls_id in zip(boxes, confs, cls_ids):
-        if int(cls_id) != COCO_PERSON_CLASS_ID:
+    for i, ((x1, y1, x2, y2), conf) in enumerate(zip(boxes, confs)):
+        # Gate 1: box confidence
+        if conf < pose_conf:
             continue
+
+        # Gate 2: keypoint sanity check
+        if i >= len(kp_conf_all):
+            continue
+        if not is_valid_worker_pose(kp_conf_all[i], keypoint_conf_threshold):
+            continue
+
         n_workers += 1
 
         cv2.rectangle(
@@ -260,10 +358,12 @@ def draw_hud(frame, fps: float, frame_counts: dict, event_counts: dict, workers_
         no_helmet: <count>    (red   if >0 else white)
         events: <total>       (white)   <- sum of all rising-edge events so far
 
-    `workers_n` is supplied by the caller from the COCO person detector
+    `workers_n` is supplied by the caller from the YOLO POSE model
     (NOT from vest + no_vest), because the SafeVision model's own `person`
-    class is too weak. If only a vest is shown to the camera with no person
-    visible, `workers` will correctly stay at 0.
+    class is too weak and a plain box detector can mistake hanging clothes
+    for a person. The pose model only counts a worker when enough body
+    keypoints (nose / shoulders / hips) are visible, so a vest held up to
+    the camera with no person behind it correctly stays at `workers: 0`.
 
     The counts on rows 3-6 are CURRENT-FRAME counts (they reset every frame).
     The `events` row is the cumulative rising-edge total across the run.
@@ -347,11 +447,13 @@ def main() -> int:
 
     # --- Load models --------------------------------------------------------
     # We load TWO YOLO models:
-    #   ppe_model    -> the SafeVision-trained 5-class model. Used for the
-    #                   actual PPE classes (vest / no_vest / helmet / no_helmet).
-    #   person_model -> stock COCO-trained yolov8n.pt. Used ONLY to count
-    #                   workers, because the SafeVision model's own `person`
-    #                   class has near-zero recall on real footage.
+    #   ppe_model  -> the SafeVision-trained 5-class model. Detects the actual
+    #                 PPE classes (vest / no_vest / helmet / no_helmet).
+    #   pose_model -> stock COCO-trained yolov8n-pose.pt. Detects real humans
+    #                 by predicting body keypoints. A worker is only counted
+    #                 when enough keypoints (nose / shoulders / hips) are
+    #                 visible -- this rejects hanging shirts / posters that
+    #                 fool a plain box detector.
     model_path = Path(args.model)
     if not model_path.exists():
         print(f"[ERROR] PPE model weights not found: {model_path}")
@@ -365,15 +467,21 @@ def main() -> int:
         return 1
     print("[INFO] PPE model loaded.")
 
-    print(f"[INFO] Loading person detector: {args.person_model}")
+    print(f"[INFO] Loading pose model: {args.pose_model}")
     try:
-        # If `args.person_model` is just the bare name 'yolov8n.pt' and
+        # If `args.pose_model` is just the bare name 'yolov8n-pose.pt' and
         # nothing local matches, Ultralytics will auto-download it (~6 MB).
-        person_model = YOLO(args.person_model)
+        pose_model = YOLO(args.pose_model)
     except Exception as exc:
-        print(f"[ERROR] Failed to load person detector: {exc}")
+        print(f"[ERROR] Failed to load pose model: {exc}")
         return 1
-    print("[INFO] Person detector loaded.")
+    print("[INFO] Pose model loaded.")
+    print(
+        f"[INFO] Thresholds  -> PPE conf: {args.conf:.2f}   "
+        f"Pose conf: {args.pose_conf:.2f}   "
+        f"Keypoint conf: {KEYPOINT_CONF_THRESHOLD:.2f} "
+        f"(need {MIN_IMPORTANT_KEYPOINTS}/{len(IMPORTANT_KEYPOINTS)} important keypoints)"
+    )
 
     # --- Open video source --------------------------------------------------
     print(f"[INFO] Opening source: {source_desc}")
@@ -455,15 +563,14 @@ def main() -> int:
                 continue
 
             try:
-                person_results = person_model.predict(
+                pose_results = pose_model.predict(
                     source=frame,
-                    conf=args.person_conf,
-                    classes=[COCO_PERSON_CLASS_ID],   # only keep `person`
+                    conf=args.pose_conf,
                     verbose=False,
                 )
             except Exception as exc:
-                print(f"[WARN] Person inference failed on a frame: {exc}")
-                person_results = None
+                print(f"[WARN] Pose inference failed on a frame: {exc}")
+                pose_results = None
 
             # results is a list; for a single frame we just take the first item
             ppe_result = ppe_results[0]
@@ -473,9 +580,12 @@ def main() -> int:
             frame_counts: dict = {name: 0 for name in CLASS_NAMES.values()}
             draw_detections(frame, ppe_result, frame_counts)
 
-            # Draw COCO person boxes (labelled 'worker') and get the count
-            if person_results is not None:
-                workers_n = draw_person_detections(frame, person_results[0])
+            # Draw worker boxes from the pose model and get the count.
+            # The keypoint sanity check inside rejects hanging shirts/posters.
+            if pose_results is not None:
+                workers_n = draw_worker_poses(
+                    frame, pose_results[0], args.pose_conf
+                )
             else:
                 workers_n = 0
 
