@@ -26,6 +26,10 @@ bus.jpg
 backend/uploads/*
 !backend/uploads/.gitkeep
 
+# Backend results (Day 7+ — never committed)
+backend/results/*
+!backend/results/.gitkeep
+
 # AI model outputs / datasets (large)
 ai-model/outputs/*
 !ai-model/outputs/.gitkeep

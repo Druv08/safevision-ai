@@ -207,3 +207,57 @@ All 4 new CSV rows have `worker_detected=yes`. Annotated MP4 still written to `a
 - Begin Day 7 backend: FastAPI `/predict` for single-image PPE inference; decide whether to also expose the violation pipeline as a streaming endpoint.
 
 ---
+
+## Day 7 - FastAPI Backend Endpoints
+
+**Goal:** Expose the trained SafeVision PPE model + the local violation pipeline through a small FastAPI HTTP service so a frontend (Day 8+) and other tools can use them.
+
+### What was built
+- `backend/main.py` rewritten as a real entry point:
+  - App title: `SafeVision AI Backend`
+  - CORS middleware locked to `http://localhost:3000` and `http://127.0.0.1:3000` only (frontend dev origins).
+  - Mounts the detection router under `/api`.
+  - `GET /` -> liveness ping.
+  - `GET /health` -> reports backend status, model load status, and whether `backend/uploads/` and `backend/results/` are writable.
+- `backend/services/model_service.py` (new):
+  - YOLO model loader, **loads once**, caches in a module-level singleton.
+  - Default weights path resolves from the backend folder up to `ai-model/outputs/training-runs/safevision_yolov8n_5class_v2/weights/best.pt`.
+  - If weights are missing, `get_model()` returns `None` and `get_model_status()` reports the error - the backend itself stays UP.
+- `backend/services/detection_service.py` (new):
+  - `run_image_detection(image_path, conf=0.4)` -> per-detection list (class_id, class_name, confidence, bbox) + per-image violation summary (Safety Vest Missing / Helmet Missing / Multiple PPE Missing).
+  - `run_video_detection(video_path, conf=0.4, frame_skip=10)` -> samples every Nth frame and returns aggregate counts. **No annotated video is written from the backend in Day 7** (kept lightweight on purpose).
+  - `read_violations_csv()` -> reads `ai-model/outputs/violations/violations_log.csv` and returns rows as JSON.
+- `backend/routes/detection.py` (new):
+  - `GET  /api/model-status`
+  - `POST /api/detect-image`   (multipart upload, allowed: .jpg .jpeg .png)
+  - `POST /api/detect-video`   (multipart upload, allowed: .mp4 .avi .mov .mkv)
+  - `GET  /api/violations`
+  - Uploaded filenames are rewritten as `<utc-timestamp>_<uuid4-hex>.<ext>` so untrusted client names never land on disk.
+  - Allowed-extension whitelist enforced on every upload.
+  - Model / inference errors surface as `503` so the client can tell server-side dependency problems apart from bad input.
+- `backend/results/.gitkeep` added; `.gitignore` extended with `backend/results/*` (matching the existing `backend/uploads/*` rule).
+
+### Smoke test (uvicorn, `main:app` on 127.0.0.1:8000)
+
+| Endpoint | Method | Status | Result |
+|---|---|---|---|
+| /                  | GET  | 200 | `SafeVision AI backend is running` |
+| /health            | GET  | 200 | backend active, model **loaded**, uploads+results writable |
+| /docs              | GET  | 200 | Swagger UI rendered |
+| /api/model-status  | GET  | 200 | `model_loaded=true`, class map returned |
+| /api/detect-image  | POST | 200 | conf=0.1 on a vest image -> 1 `vest` detection with bbox |
+| /api/detect-video  | POST | 200 | 812-frame video @ frame_skip=60 -> 14 processed, vest=9 no_vest=5, Safety Vest Missing=5 |
+| /api/violations    | GET  | 200 | 64 rows returned from local CSV |
+
+### Out of scope (deliberately, per Day 7 spec)
+- No frontend.
+- No Supabase or any other database.
+- No deployment.
+- No model retraining.
+- No dataset changes.
+- `violation_detection.py` (Day 6 / 6.5) and `video_detection.py` (Day 5 / 5.5) were NOT modified.
+
+### Tomorrow (Day 8)
+- Decide between starting the React/Next frontend or layering Supabase storage / auth onto the existing backend first.
+
+---

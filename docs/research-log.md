@@ -323,3 +323,60 @@ Adding the per-frame overlap check costs a handful of array operations per (PPE 
 - The `unmatched_no_*` counters give us a free, cheap signal for *false-positive load*: a real deployment can monitor these to detect when the PPE model is firing too often on non-worker objects, without having to add a separate audit pipeline.
 
 ---
+
+## 15. Day 7 - Backend / API Notes
+
+### 15.1 Architecture choice
+The backend is intentionally **stateless** and **thin**: routes do the HTTP work, services do the model work, and nothing crosses those layers in the other direction. The services/ modules never import FastAPI, and outes/ never imports ultralytics directly. This means we can later reuse detection_service.run_image_detection from a queue worker, a CLI script, or a unit test without any HTTP machinery loaded.
+
+### 15.2 Model singleton (why and how)
+A YOLOv8 model is a few hundred MB of weights and takes 1-3 seconds to instantiate on this hardware. Re-loading per request would dominate latency and would also leak GPU/CPU memory over time. So:
+
+- `services/model_service.py` holds a module-level `_model` reference and a matching `_model_path_used`.
+- `get_model()` lazy-loads on first call and short-circuits on every subsequent call.
+- `ultralytics` is imported **inside** the loader function, not at module top. This keeps `import services.model_service` cheap (does not pull in torch) - useful for tests and for `/health` warming behaviour.
+- If the weights file is missing, the loader sets `_model = None` and stores a human-readable `_model_error`. The backend itself never crashes; the affected endpoints simply return a 503 with the error.
+
+This is the same lazy + cached pattern we will reuse on Day 8+ for any heavier services (Supabase client, etc.).
+
+### 15.3 Image vs video endpoint shape
+The two detection endpoints are deliberately asymmetric:
+
+- `/api/detect-image` returns the **full** per-detection list (class_id, class_name, confidence, bbox) plus a per-image violation summary. A frontend can draw boxes from the response without any extra round-trip.
+- `/api/detect-video` returns **aggregate counts only** (`detections_by_class`, `violations_by_type`). It does NOT return per-frame boxes and it does NOT write an annotated video.
+
+The reason is purely about response size and CPU cost. A 30-second video at 30 FPS = 900 frames; even at `frame_skip=10` that is 90 inferences and potentially thousands of boxes. Returning all of that as JSON per HTTP call would be huge and is not actually useful for a dashboard - the dashboard wants the counts. If a future feature needs per-frame data, it should be a separate endpoint that streams (Server-Sent Events or chunked NDJSON) rather than building it into this one.
+
+### 15.4 Upload-file safety
+- Allowed-extension whitelists are enforced **at the route layer** before the file is read into memory (image: `.jpg .jpeg .png`; video: `.mp4 .avi .mov .mkv`).
+- The original filename is **never** trusted on disk. Every upload is renamed to `<utc-timestamp>_<uuid4-hex>.<ext>` before being written. This prevents path-traversal (`../../etc/passwd`), filename collisions, and unicode/space issues in PowerShell / shell follow-up steps.
+- Uploads land in `backend/uploads/`, which is git-ignored. They are kept on disk for now because the inference functions take a path; if the backend later gains a streaming variant we can switch to in-memory `BytesIO`.
+
+### 15.5 Violation rule consistency
+The per-image violation summary in `detection_service.py` uses the **same** rule mapping as the local `ai-model/inference/violation_detection.py`:
+
+| Trigger | Violation type | Severity |
+|---|---|---|
+| `no_vest` alone           | Safety Vest Missing   | Medium   |
+| `no_helmet` alone         | Helmet Missing        | High     |
+| `no_vest` AND `no_helmet` (same image) | Multiple PPE Missing | Critical |
+
+The `Multiple PPE Missing` rule is applied **per image**, not per detection: even if a frame has 5 `no_vest` boxes and 3 `no_helmet` boxes, that frame contributes ONE `Multiple PPE Missing` event, using the higher of the two top confidences. This matches the local pipeline so a frontend that consumes both `/api/violations` (local CSV) and `/api/detect-image` (live) does not see two different rule definitions.
+
+Important: the HTTP-side violation summary does **not** include the Day 6.5 worker-overlap gate. That gate is part of the saving pipeline in the local tool, not the inference itself. The backend just reports what the model sees; gating by worker presence is a job for a future `POST /api/run-violation-pipeline` style endpoint.
+
+### 15.6 CORS scope
+CORS is restricted to `http://localhost:3000` and `http://127.0.0.1:3000` only. This is enough for the Day 8+ React/Next dev server and nothing else. When deployment becomes a thing we will add the production origin explicitly rather than opening it to `*`.
+
+### 15.7 What the backend deliberately does NOT do (yet)
+- No persistence to a database. Violations remain a local CSV.
+- No authentication / authorisation. The endpoints are open on `127.0.0.1`.
+- No background tasks. Every request is synchronous.
+- No model warm-up at startup; the first call to a detection endpoint pays the load cost. `/health` and `/api/model-status` both trigger the load, so a frontend can poll either to warm the model before its first real request.
+
+### 15.8 Implication for Day 8+
+- Adding Supabase storage = wrap each successful `/api/detect-image` response with an upload call (annotated screenshot + JSON row).
+- Adding a frontend = no backend changes needed; the existing endpoints already return the shapes a React dashboard needs.
+- Adding a violation-pipeline endpoint = port the Day 6.5 logic from `violation_detection.py` into a service function and expose it as a new POST route; the local tool stays as the source of truth for the logic.
+
+---
