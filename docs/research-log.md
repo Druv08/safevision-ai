@@ -147,3 +147,54 @@ Raising `--conf` from 0.25 → 0.40 cut the `no_vest` per-frame rate from ~0.99 
 - Ultralytics YOLOv8 docs — https://docs.ultralytics.com/
 - Roboflow Universe: `construction-safety-yolo`, `vest-no-vest` v1
 - Relevant PPE detection papers (to be cited in final paper)
+
+## 12. Day 5 Cleanup — Dual-Model Inference
+
+### Motivation
+During live webcam testing it became clear that the v2 model's own `person` class is too weak (validation recall ≈ 0) to drive a worker count. A first attempt used `workers = max(person, vest + no_vest)` as a proxy, but this gave the wrong answer when a vest was held up to the camera with no person in frame (`workers` was reported as 1). To get a trustworthy worker count, we added a **second YOLO model** dedicated to person detection.
+
+### Architecture
+Two Ultralytics YOLO models are loaded at startup and both run on every frame:
+
+| Model | Weights | Purpose | Classes kept |
+|-------|---------|---------|--------------|
+| SafeVision PPE | `safevision_yolov8n_5class_v2/weights/best.pt` | vest / no_vest / helmet / no_helmet detection | all PPE classes (1–4) |
+| COCO detector  | `yolov8n.pt` (stock pretrained) | worker / person count + box | COCO class 0 only (`classes=[0]`) |
+
+The `workers` HUD value is now sourced **exclusively** from the COCO detector. The SafeVision `person` class is still tracked internally but ignored for worker counting.
+
+### CLI
+| Flag | Default | Purpose |
+|------|---------|---------|
+| `--conf` | 0.25 | PPE-model confidence |
+| `--person-conf` | 0.4 | COCO person-detector confidence |
+| `--model` | (v2 best.pt) | Override PPE weights |
+| `--person-model` | auto-find `yolov8n.pt` | Override person weights |
+
+### Behavioural expectations now
+| Scene | `workers` | `vest` / `no_vest` |
+|-------|:---------:|:-------------------:|
+| Vest only, person out of frame | **0** | vest = 1 |
+| Person in frame, no vest | **1** | no_vest ≈ 1 |
+| Person in frame, wearing vest | **1** | vest = 1 |
+| Two people in frame | **2** | sum of their PPE boxes |
+
+### Performance impact
+Running two YOLO forward passes per frame on CPU roughly halves throughput:
+
+| Pipeline | Webcam @ 640×480 |
+|----------|------------------:|
+| Single-model (v2 only) | ~25–27 FPS |
+| Dual-model (v2 + COCO yolov8n) | **~16 FPS** |
+
+Still within the MVP target for live preview. If we ever need more headroom, options are: run the COCO detector every N frames and reuse the last result, share preprocessed tensors, or move to GPU.
+
+### Verified on webcam test (Day 5 cleanup run)
+- 794 frames processed, ~48 s
+- Avg FPS: 16.4 smoothed
+- Both models loaded cleanly, no errors
+- Event totals (rising-edge): vest = 6, no_vest = 17, helmet = 0, no_helmet = 0
+- Manual checks confirmed: vest-only frame → `workers: 0`; person-only frame → `workers: 1`
+
+### Implication for Day 6
+Violation logic can now be expressed cleanly as: a `worker` box (from COCO) that geometrically contains a `no_vest` or `no_helmet` PPE box → violation. The `workers` value can be trusted as a denominator without the false-positive risk of the vest-proxy approach.

@@ -103,3 +103,14 @@ person 0 · helmet 16 · no_helmet 0 · vest 16 · no_vest 18 (total 50 detectio
 ### Next Day Plan (Day 6)
 - Begin backend integration: `/predict` endpoint serving `best.pt`
 - Decide whether to train a v3 with class-balanced sampling to fix the `person`/`helmet` weakness, or move forward with v2 + post-processing rules
+
+### Day 5 Cleanup — Dual-Model Worker Detection
+- Refactored `video_detection.py` to load **two YOLO models** in parallel:
+  - **SafeVision PPE model** (`safevision_yolov8n_5class_v2/weights/best.pt`) — used for `vest` / `no_vest` / `helmet` / `no_helmet` only.
+  - **COCO YOLOv8n** (`yolov8n.pt`) — used **only** for worker/person detection (`classes=[0]`).
+- New CLI flag: `--person-conf` (default `0.4`).
+- Overlay row `human` removed; `workers` is now driven by the COCO detector — NOT by `vest + no_vest`.
+- Fixed the issue where holding a loose vest in front of the camera was being counted as a worker. With the new logic: vest visible + no person in frame → `workers: 0`, `vest: 1`.
+- COCO person boxes drawn in cyan-blue with label `worker` (visually distinct from green/red PPE boxes).
+- Performance: FPS dropped from ~25 (single-model) to ~16 (dual-model) on CPU at 640×480 — still well within MVP target.
+- Webcam test: 794 frames, 16.4 FPS, dual-model loaded cleanly, no errors. Workers counted only when a real person was visible.
