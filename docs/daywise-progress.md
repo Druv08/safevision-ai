@@ -170,3 +170,40 @@ person 0 · helmet 16 · no_helmet 0 · vest 16 · no_vest 18 (total 50 detectio
 - Tighten worker-side filtering in `violation_detection.py` (pose model option, mirroring `video_detection.py`).
 
 
+
+## Day 6.5 - Worker-Matched Violation Filtering
+
+**Goal:** Stop saving violations when a no_vest / no_helmet box is not on a real worker.
+
+### Problem observed on the Day 6 video run
+On `screen_recording_20260605_1222.mp4` the Day 6 pipeline saved 5 `Safety Vest Missing` events. Two of those CSV rows had `worker_detected=no` - i.e. the PPE model fired on something vest-shaped (clothing on a chair, a poster, etc.) but the COCO person detector did not return a worker box. Those should not be counted as worker violations.
+
+### Code changes (`ai-model/inference/violation_detection.py`)
+- New helper `calculate_overlap_ratio(inner_box, outer_box)`: returns `intersection_area / area(inner_box)`. **Not IoU** - a small `no_vest` chest box has naturally low IoU with a full-body worker box, but its *overlap ratio inside the worker box* is what we care about.
+- New helper `ppe_matches_worker(ppe_box, worker_boxes, overlap_threshold=0.3)`: `True` if any worker box's overlap ratio is at least the threshold.
+- `draw_worker_boxes()` now returns `(n_workers, worker_boxes)` instead of just the count, so the main loop can use the boxes for matching.
+- New CLI flag: `--worker-overlap` (default `0.3` = 30%).
+- Main-loop gate order: **worker-match -> active-state -> cooldown**. `last_seen_violation_time` is refreshed even when the worker-match gate suppresses a save, so `--clear-after` does not mis-trip mid-violation.
+- `Multiple PPE Missing` now requires **both** `no_vest` and `no_helmet` to be individually matched to any worker.
+- Final summary now reports `Worker-match gate` threshold, `Unmatched no_vest` and `Unmatched no_helmet` skip counts.
+- Startup banner now prints the worker-overlap threshold.
+
+### Verified video run
+Same source (`screen_recording_20260605_1222.mp4`, 2560x1524, 812 frames):
+
+| Metric | Day 6 | Day 6.5 |
+|---|---|---|
+| Frames | 812 | 812 |
+| FPS | 10.68 | 9.54 |
+| Violations saved | 5 | **4** |
+| `worker_detected=no` saves | 2 | **0** |
+| Unmatched `no_vest` skipped | n/a | **72** |
+| Errors | none | none |
+
+All 4 new CSV rows have `worker_detected=yes`. Annotated MP4 still written to `ai-model/outputs/video-detections/`.
+
+### Tomorrow
+- Webcam re-run with the new gate (long sit + walk-out-of-frame to exercise unmatched counter on live input).
+- Begin Day 7 backend: FastAPI `/predict` for single-image PPE inference; decide whether to also expose the violation pipeline as a streaming endpoint.
+
+---

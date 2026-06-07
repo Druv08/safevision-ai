@@ -200,6 +200,19 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--worker-overlap",
+        type=float,
+        default=0.3,
+        help=(
+            "Minimum fraction of a PPE-violation box (no_vest / no_helmet) "
+            "that must lie inside a worker box before the violation is "
+            "saved (default: 0.3 = 30%). Detections with no worker match "
+            "are still drawn on screen, but are NOT screenshot/logged. "
+            "This stops loose clothing or standalone vests from being "
+            "counted as worker violations."
+        ),
+    )
+    parser.add_argument(
         "--save-video",
         action="store_true",
         help="If set, also save the annotated output video to ai-model/outputs/video-detections/",
@@ -434,13 +447,21 @@ def filter_worker_boxes(
     return boxes[idx], confs[idx]
 
 
-def draw_worker_boxes(frame, result, person_conf: float) -> int:
-    """Draw 'worker' boxes for COCO person detections; return the count.
+def draw_worker_boxes(frame, result, person_conf: float):
+    """Draw 'worker' boxes for COCO person detections.
+
+    Returns:
+        (n_workers, worker_boxes) where:
+          - n_workers is the count of worker boxes drawn
+          - worker_boxes is a list of [x1, y1, x2, y2] floats for every
+            drawn worker. This is what the violation logic consumes when
+            deciding whether a no_vest / no_helmet box overlaps a real
+            person.
 
     Worker boxes are cyan to stay distinct from the green/red PPE boxes.
     """
     if result.boxes is None or len(result.boxes) == 0:
-        return 0
+        return 0, []
 
     boxes   = result.boxes.xyxy.cpu().numpy()
     confs   = result.boxes.conf.cpu().numpy()
@@ -449,7 +470,7 @@ def draw_worker_boxes(frame, result, person_conf: float) -> int:
     mask = cls_ids == COCO_PERSON_CLASS_ID
     boxes, confs = boxes[mask], confs[mask]
     if len(boxes) == 0:
-        return 0
+        return 0, []
 
     h_img, w_img = frame.shape[:2]
     boxes, confs = filter_worker_boxes(
@@ -457,8 +478,11 @@ def draw_worker_boxes(frame, result, person_conf: float) -> int:
     )
 
     n_workers = 0
+    worker_boxes = []
     for (x1, y1, x2, y2), conf in zip(boxes, confs):
         n_workers += 1
+        worker_boxes.append([float(x1), float(y1), float(x2), float(y2)])
+
         cv2.rectangle(
             frame, (int(x1), int(y1)), (int(x2), int(y2)),
             WORKER_BOX_COLOR, 2,
@@ -476,7 +500,78 @@ def draw_worker_boxes(frame, result, person_conf: float) -> int:
             cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 1, cv2.LINE_AA,
         )
 
-    return n_workers
+    return n_workers, worker_boxes
+
+
+# ---------------------------------------------------------------------------
+# Worker <-> PPE matching (Day 6.5)
+# ---------------------------------------------------------------------------
+def calculate_overlap_ratio(inner_box, outer_box) -> float:
+    """How much of `inner_box` lies inside `outer_box`?
+
+    This is NOT IoU. It is intersection / area(inner_box), so it answers
+    the very specific question: "what fraction of this PPE box is
+    actually inside this worker box?"
+
+    Returns a value in [0.0, 1.0]:
+      0.0 -> the PPE box does not touch the worker box at all
+      1.0 -> the PPE box is fully contained inside the worker box
+
+    We use this (not IoU) on purpose: a `no_vest` box that sits on a
+    worker's chest is small relative to the worker's full-body box, so
+    their IoU is naturally low. Overlap-ratio captures the real signal
+    we care about ("is this PPE box ON this worker?").
+    """
+    ax1, ay1, ax2, ay2 = inner_box
+    bx1, by1, bx2, by2 = outer_box
+
+    # Intersection rectangle
+    ix1 = max(ax1, bx1)
+    iy1 = max(ay1, by1)
+    ix2 = min(ax2, bx2)
+    iy2 = min(ay2, by2)
+
+    iw = max(0.0, ix2 - ix1)
+    ih = max(0.0, iy2 - iy1)
+    inter = iw * ih
+    if inter <= 0.0:
+        return 0.0
+
+    inner_area = max(0.0, ax2 - ax1) * max(0.0, ay2 - ay1)
+    if inner_area <= 0.0:
+        return 0.0
+    return float(inter / inner_area)
+
+
+def ppe_matches_worker(ppe_box, worker_boxes, overlap_threshold: float = 0.3) -> bool:
+    """Return True if `ppe_box` overlaps ANY worker box by >= threshold.
+
+    "Overlap" here is `calculate_overlap_ratio(ppe_box, worker_box)`,
+    i.e. the fraction of the PPE box that lies inside the worker box.
+
+    Why this exists (beginner explanation):
+        A PPE-only detection (e.g. a `no_vest` box) is NOT a worker
+        violation by itself. It might be a shirt on a hanger, a poster,
+        or a piece of clothing on a chair. To call it a worker violation
+        we also need a real worker (from the COCO person detector) AND
+        we need the PPE box to actually be ON that worker. This
+        helper is the second half of that check.
+
+    Args:
+        ppe_box: [x1, y1, x2, y2] for the PPE-violation detection.
+        worker_boxes: list of [x1, y1, x2, y2] for all worker boxes
+            in the current frame.
+        overlap_threshold: minimum overlap-ratio (default 0.3 = 30%).
+
+    Returns:
+        True if any worker box has overlap-ratio >= threshold.
+    """
+    if not worker_boxes:
+        return False
+    for wb in worker_boxes:
+        if calculate_overlap_ratio(ppe_box, wb) >= overlap_threshold:
+            return True
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -647,7 +742,8 @@ def main() -> int:
         f"[INFO] Thresholds  -> PPE conf: {args.conf:.2f}   "
         f"Person/worker conf: {args.person_conf:.2f}   "
         f"Cooldown: {args.cooldown:.1f}s   "
-        f"Clear-after: {args.clear_after:.1f}s"
+        f"Clear-after: {args.clear_after:.1f}s   "
+        f"Worker-overlap: {args.worker_overlap:.2f}"
     )
 
     # --- Prep output paths --------------------------------------------------
@@ -722,6 +818,13 @@ def main() -> int:
     raw_ppe_total = 0
     kept_ppe_total = 0
 
+    # Worker-match accounting (Day 6.5). These count PPE-violation boxes
+    # that fired in a frame but had NO worker overlap and were therefore
+    # NOT saved as worker violations. Surfaced in the final summary so
+    # the operator can tell how often the worker-match gate intervened.
+    unmatched_no_vest_count   = 0
+    unmatched_no_helmet_count = 0
+
     frames_processed = 0
     last_t = time.time()
     fps_smoothed = 0.0
@@ -775,10 +878,52 @@ def main() -> int:
             draw_ppe_detections(frame, ppe_dets, frame_counts, max_confs)
 
             workers_n = 0
+            worker_boxes: list = []
             if person_results is not None:
-                workers_n = draw_worker_boxes(
+                workers_n, worker_boxes = draw_worker_boxes(
                     frame, person_results[0], args.person_conf
                 )
+
+            # ---- Worker <-> PPE matching ----------------------------------
+            # Before we let `detect_violations` produce events, decide which
+            # no_vest / no_helmet boxes actually belong to a real worker.
+            # A standalone no_vest box (e.g. a shirt on a chair) will NOT
+            # produce a saved violation, even if active-state + cooldown
+            # would otherwise allow it.
+            matched_no_vest = False
+            matched_no_helmet = False
+            unmatched_nv_this_frame = 0
+            unmatched_nh_this_frame = 0
+            for det in ppe_dets:
+                cname = det["class_name"]
+                if cname not in ("no_vest", "no_helmet"):
+                    continue
+                is_match = ppe_matches_worker(
+                    det["bbox"], worker_boxes,
+                    overlap_threshold=args.worker_overlap,
+                )
+                if cname == "no_vest":
+                    if is_match:
+                        matched_no_vest = True
+                    else:
+                        unmatched_nv_this_frame += 1
+                elif cname == "no_helmet":
+                    if is_match:
+                        matched_no_helmet = True
+                    else:
+                        unmatched_nh_this_frame += 1
+
+            # Bump cumulative skip counters (for the final summary only).
+            unmatched_no_vest_count   += unmatched_nv_this_frame
+            unmatched_no_helmet_count += unmatched_nh_this_frame
+
+            # Lookup: violation_type -> may-save?
+            # 'Multiple PPE Missing' requires BOTH classes matched.
+            allow_save = {
+                "Safety Vest Missing":  matched_no_vest,
+                "Helmet Missing":       matched_no_helmet,
+                "Multiple PPE Missing": matched_no_vest and matched_no_helmet,
+            }
 
             # ---- FPS (EMA for a smoother number) ---------------------------
             now = time.time()
@@ -815,6 +960,15 @@ def main() -> int:
                 # We do this even when we suppress the save below, so the
                 # clear-after timer doesn't trip mid-violation.
                 last_seen_violation_time[vtype] = now
+
+                # Worker-match gate (Day 6.5):
+                # If the PPE-violation box(es) for this type don't overlap
+                # any worker box by >= --worker-overlap, do NOT save. We
+                # still drew the red PPE box on screen, so the operator
+                # can see the detection, but it is not logged as a worker
+                # violation.
+                if not allow_save[vtype]:
+                    continue
 
                 # Active-state gate: if this type is already an open event,
                 # don't count it again until it has been absent long enough.
@@ -952,6 +1106,18 @@ def main() -> int:
         )
         print(
             "                         violation disappears for >clear_after seconds."
+        )
+        print("")
+        print(
+            f"Worker-match gate      : overlap_threshold={args.worker_overlap:.2f}"
+        )
+        print(
+            f"  Unmatched no_vest    : {unmatched_no_vest_count}  "
+            "(PPE boxes that fired without a worker overlap, NOT saved)"
+        )
+        print(
+            f"  Unmatched no_helmet  : {unmatched_no_helmet_count}  "
+            "(PPE boxes that fired without a worker overlap, NOT saved)"
         )
         print("")
         print("Note: helmet / no_helmet detection in the v2 PPE model is")

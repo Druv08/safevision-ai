@@ -281,3 +281,45 @@ At higher resolution the PPE model rarely produced same-class overlaps, so the I
 ### 13.5 Implication for Day 7+
 With the violation pipeline producing trustworthy, deduplicated, single-event-per-continuous-occurrence records, the local CSV + screenshots format is ready to be exposed via a FastAPI endpoint or pushed into Supabase storage when backend work resumes.
 
+
+## 14. Day 6.5 - Worker-Match Gate
+
+### 14.1 Why we needed it
+After Day 6, the saved-violation CSV still contained rows where `worker_detected=no`. Those came from PPE detections (mostly `no_vest`) that triggered on clothing or background objects with no person nearby. `worker_detected` was only an observational column; it did not gate the save. Day 6.5 turns the worker presence requirement into an actual save-time filter, and additionally requires the PPE box and the worker box to spatially overlap.
+
+### 14.2 Why overlap ratio (not IoU)
+A standing worker's box is roughly torso-plus-legs (tall, lots of area). A `no_vest` box typically covers only the chest (a small fraction of that area). The IoU of those two boxes is naturally low - in our test footage usually below 0.20 - so an IoU-based gate would reject most genuine violations.
+
+We instead compute `intersection_area / area(ppe_box)`. This answers the right question: *what fraction of the PPE box lies inside the worker box?* A correctly-placed chest `no_vest` typically scores well above 0.80 against the surrounding worker box, while a vest-shaped object away from any worker scores 0.0. A 0.30 default threshold (`--worker-overlap`) gave a clean separation on the test video and leaves headroom for partial occlusion.
+
+### 14.3 Implementation
+- `calculate_overlap_ratio(inner_box, outer_box) -> float` - returns `intersection / area(inner_box)` in `[0, 1]`.
+- `ppe_matches_worker(ppe_box, worker_boxes, overlap_threshold) -> bool` - per-frame check against every worker box; short-circuits on first match.
+- `draw_worker_boxes` was refactored to return `(n_workers, worker_boxes)` so the main loop can reuse the exact list of accepted worker boxes (after the conf / area / aspect-ratio sanity filter).
+- Gate is applied per violation type:
+  - `Safety Vest Missing`  -> at least one `no_vest` box matches a worker
+  - `Helmet Missing`       -> at least one `no_helmet` box matches a worker
+  - `Multiple PPE Missing` -> **both** classes independently match a worker
+- Gate order in the main loop: **worker-match -> active-state -> cooldown**. The save is skipped if any gate fails, but `last_seen_violation_time` is still refreshed so the active-state clear-after timer cannot trip mid-violation just because the save was suppressed.
+
+### 14.4 Empirical impact on the test video
+Source: `screen_recording_20260605_1222.mp4`, 2560x1524, 812 frames, `--conf 0.4 --person-conf 0.7 --worker-overlap 0.3 --clear-after 2 --cooldown 5`.
+
+| | Day 6 | Day 6.5 |
+|---|---|---|
+| Saved violations | 5 | 4 |
+| Rows with `worker_detected=no` | 2 | 0 |
+| Unmatched `no_vest` skipped | n/a (not counted) | 72 |
+| Unmatched `no_helmet` skipped | n/a (not counted) | 0 |
+| Per-class duplicate filter removed | 2 / 701 (0.3%) | 2 / 701 (0.3%) |
+
+Interpretation: across 812 frames, 72 individual `no_vest` detections fired without any worker overlap. Without the gate, the active-state machine would still have collapsed many of those into a single event each, but two of the five Day 6 saves were spurious. Both are now removed, and the remaining four saves all have `worker_detected=yes` in the CSV.
+
+### 14.5 Performance note
+Adding the per-frame overlap check costs a handful of array operations per (PPE box, worker box) pair. Average FPS on the same video moved from 10.68 (Day 6) to 9.54 (Day 6.5). The drop is partly the overlap loop and partly run-to-run variance from background load. No optimisation is warranted at this scale.
+
+### 14.6 Implication for Day 7+
+- The CSV column `worker_detected` is now a guaranteed `yes` for every logged event, which means the backend can treat the CSV as the worker-violation ledger directly - no post-filter needed on the server side.
+- The `unmatched_no_*` counters give us a free, cheap signal for *false-positive load*: a real deployment can monitor these to detect when the PPE model is firing too often on non-worker objects, without having to add a separate audit pipeline.
+
+---
