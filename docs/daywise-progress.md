@@ -114,3 +114,59 @@ person 0 · helmet 16 · no_helmet 0 · vest 16 · no_vest 18 (total 50 detectio
 - COCO person boxes drawn in cyan-blue with label `worker` (visually distinct from green/red PPE boxes).
 - Performance: FPS dropped from ~25 (single-model) to ~16 (dual-model) on CPU at 640×480 — still well within MVP target.
 - Webcam test: 794 frames, 16.4 FPS, dual-model loaded cleanly, no errors. Workers counted only when a real person was visible.
+
+---
+
+## Day 6 — Local Violation Detection (Screenshots + CSV Log)
+
+### Completed
+- [x] Created `ai-model/inference/violation_detection.py` — local PPE violation pipeline (no backend yet).
+  - Dual-model reuse: SafeVision PPE v2 (`best.pt`) for PPE, COCO `yolov8n.pt` for workers (Day 5 setup, pose model intentionally NOT used here).
+  - Worker boxes use the same size + aspect-ratio sanity filter as Day 5 (`--person-conf` default `0.7`).
+  - Violation rules (frame-level):
+    - `no_vest` present → **Safety Vest Missing** (Medium)
+    - `no_helmet` present → **Helmet Missing** (High) — *experimental, weaker class*
+    - both present in same frame → **Multiple PPE Missing** (Critical)
+  - **Duplicate PPE box filter**: `calculate_iou()` + `filter_duplicate_boxes(iou_threshold=0.5)` collapse same-class overlapping boxes (e.g. three `no_vest` boxes on one chest → one). Different classes are never merged.
+  - **Active-state counting**: a continuous violation is counted **once**, not once per cooldown. New CLI flag `--clear-after` (default 2.0 s): a violation type only re-fires after it has been absent for >`clear_after` seconds. Cooldown (`--cooldown`, default 5 s) is retained as a secondary safety net.
+  - Evidence:
+    - Screenshots (annotated frames, HUD + boxes baked in) → `ai-model/outputs/violations/screenshots/<prefix>_YYYYMMDD_HHMMSS_frame<N>.jpg`
+    - CSV log → `ai-model/outputs/violations/violations_log.csv` with columns `violation_id, timestamp, source, frame_number, violation_type, severity, confidence, worker_detected, screenshot_path`
+  - HUD row `violations:` = cumulative **saved events**, not raw detections.
+  - `--save-video` saves the annotated MP4 to `ai-model/outputs/video-detections/` (Day 5 folder).
+- [x] Updated `.gitignore` with explicit `ai-model/outputs/violations/`, `*.jpg`, `*.jpeg`, `*.png`, `*.csv` rules so screenshots and the CSV log never get committed.
+
+### Behavioural checks (verified live)
+
+| Scenario | Expected | Observed |
+|---|---|---|
+| Stand without vest, sit still for ~140 s | violations = 1 | **1** (frame 226 → 2354 gap, zero new events) |
+| Cover chest / leave frame > 2 s, then return | violations += 1 | yes |
+| Helmet violations | rare due to weak class | 0 across all runs |
+
+### Performance
+
+| Run | Resolution | Frames | Avg FPS | Events saved | Dup filter (removed / raw) |
+|---|---|---:|---:|---:|---:|
+| Webcam (active-state on) | 640×480 | 2,811 | 15.16 | 5 | 212 / 2,725 (7.8%) |
+| Video file (`--save-video`) | 2,560×1,524 | 812 | 10.68 | 5 | 2 / 701 (0.3%) |
+
+### Video file test details
+- Input: `ai-model/test-videos/screen_recording_20260605_1222.mp4` (2560×1524, ~27 s of source time).
+- Output: `safevision_violations_20260608_013801.mp4` (80.2 MB).
+- 5 Safety Vest Missing screenshots written (608–629 KB each, annotated).
+- 5 new CSV rows: confidences 0.78 / 0.58 / 0.62 / 0.49 / 0.65; `worker_detected` mixed (yes/no).
+- No errors.
+
+### Issues Faced / Notes
+- The first naïve run inflated the violations count by re-saving every cooldown tick (~20 events for one continuous sit). Fixed by adding the active-state + `clear-after` gate.
+- The PPE model occasionally emitted 2–3 overlapping `no_vest` boxes on a single chest. Fixed by per-class IoU NMS (raw vs kept ratio surfaced in the summary).
+- Several saved CSV rows for the video had `worker_detected = no` because the COCO person filter (`--person-conf 0.7`, 3% min area, AR 0.2–1.2) is intentionally strict. The vest-violation detection is independent and still fires correctly. Worker-side strict filtering will be improved later (likely by swapping in the pose model used in `video_detection.py`).
+- `helmet` / `no_helmet` remains the weakest pair in v2 — `Helmet Missing` and `Multiple PPE Missing` counts should still be treated as experimental until a v3 retrain.
+
+### Next Day Plan (Day 7)
+- Start the backend integration: FastAPI `/predict` endpoint serving `best.pt` for single-image inference.
+- Decide whether the violation pipeline should also be exposed as an HTTP endpoint that returns the latest events + screenshot URLs.
+- Tighten worker-side filtering in `violation_detection.py` (pose model option, mirroring `video_detection.py`).
+
+

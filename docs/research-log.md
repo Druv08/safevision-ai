@@ -198,3 +198,86 @@ Still within the MVP target for live preview. If we ever need more headroom, opt
 
 ### Implication for Day 6
 Violation logic can now be expressed cleanly as: a `worker` box (from COCO) that geometrically contains a `no_vest` or `no_helmet` PPE box → violation. The `workers` value can be trusted as a denominator without the false-positive risk of the vest-proxy approach.
+
+---
+
+## 13. Day 6 — Violation Logic, Duplicate Filtering, Active-State Counting
+
+### Goal
+Turn raw per-frame PPE detections into auditable **violation events**, with screenshots and a CSV log, without inflating the count when the same condition is continuously visible.
+
+### Pipeline
+The Day 5 dual-model pipeline is reused (SafeVision PPE v2 + COCO `yolov8n.pt`), with three additions:
+
+1. **Per-class IoU NMS on PPE boxes** (`filter_duplicate_boxes`, `iou_threshold=0.5`). Groups by `class_name`, sorts by confidence, drops same-class boxes whose IoU with a kept box exceeds 0.5. Different classes (e.g. `vest` vs `no_vest`) are never merged — that disagreement is information the violation logic uses.
+2. **Violation rules** (frame-level):
+   - `no_vest` ⇒ Safety Vest Missing (Medium)
+   - `no_helmet` ⇒ Helmet Missing (High, experimental)
+   - both together ⇒ Multiple PPE Missing (Critical, only ONE row written per frame in this case to avoid triple-logging)
+3. **Active-state counting** (`--clear-after`, default 2 s) — see §13.1.
+
+### 13.1 Active-state counting (key fix)
+A naive cooldown alone (Day 6 first cut) still re-fired the same continuous violation every 5 s. The active-state machine fixes this:
+
+```
+For each violation type T:
+  if T is fired in current frame:
+    last_seen[T] = now
+    if active[T] is False AND (now - last_saved[T]) >= cooldown:
+        save screenshot + CSV row
+        active[T] = True
+        last_saved[T] = now
+  else:
+    if active[T] is True AND (now - last_seen[T]) > clear_after:
+        active[T] = False   # ready to fire again on next appearance
+```
+
+Effect: a 140-second continuous `no_vest` produces exactly **1** Safety Vest Missing event. A new event is only created after the violation disappears for >`clear_after` seconds and then reappears.
+
+### 13.2 Evidence layout
+- Annotated screenshots → `ai-model/outputs/violations/screenshots/`
+  - Filename pattern: `<prefix>_YYYYMMDD_HHMMSS_frame<N>.jpg`
+- CSV log → `ai-model/outputs/violations/violations_log.csv`
+  - Columns: `violation_id, timestamp, source, frame_number, violation_type, severity, confidence, worker_detected, screenshot_path`
+- Annotated MP4 (optional, via `--save-video`) → `ai-model/outputs/video-detections/`
+- All four locations are gitignored.
+
+### 13.3 Verified runs
+
+#### Webcam (active-state on, `--cooldown 5 --clear-after 2`)
+| Metric | Value |
+|---|---:|
+| Frames processed | 2,811 |
+| Avg FPS (smoothed) | 15.16 |
+| Total violations saved | 5 |
+| Safety Vest Missing | 5 |
+| Helmet Missing | 0 |
+| Multiple PPE Missing | 0 |
+| Dup filter (kept / raw) | 2,513 / 2,725 (7.8% removed) |
+| Continuous-sit window | ~140 s ⇒ 1 event ✅ |
+
+Baseline comparison: an earlier identical-cooldown run **without** the active-state gate produced 20 events in 2,037 frames over the same kind of scene. Active-state cuts inflation by roughly **4×** on continuous violations.
+
+#### Video file (`screen_recording_20260605_1222.mp4`, 2560×1524)
+| Metric | Value |
+|---|---:|
+| Frames processed | 812 |
+| Avg FPS (smoothed) | 10.68 |
+| Output MP4 size | 80.2 MB |
+| Total violations saved | 5 |
+| Safety Vest Missing | 5 |
+| Helmet Missing | 0 |
+| Multiple PPE Missing | 0 |
+| Dup filter (kept / raw) | 699 / 701 (0.3% removed) |
+| Errors | none |
+
+At higher resolution the PPE model rarely produced same-class overlaps, so the IoU filter barely fired — as expected.
+
+### 13.4 Known limitations / honest notes
+- **`worker_detected = no` in some CSV rows**: the COCO person filter (`--person-conf 0.7`, 3% min frame area, AR 0.2–1.2) is intentionally strict. Vest-violation detection is independent of the worker box and still fires correctly. Worker-side filtering can be tightened later by swapping in the pose model already used in `video_detection.py`.
+- **Helmet class is weak in v2** (mAP50 = 0.45, with only 9 valid instances for `no_helmet`). Helmet Missing and Multiple PPE Missing counts should be treated as experimental until a v3 retrain rebalances the dataset.
+- **Cooldown vs clear-after**: cooldown is now a secondary safety net for rapid re-appearance bursts; active-state is the primary correctness mechanism for continuous violations.
+
+### 13.5 Implication for Day 7+
+With the violation pipeline producing trustworthy, deduplicated, single-event-per-continuous-occurrence records, the local CSV + screenshots format is ready to be exposed via a FastAPI endpoint or pushed into Supabase storage when backend work resumes.
+

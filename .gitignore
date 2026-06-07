@@ -59,3 +59,12 @@ ai-model/outputs/video-detections/
 *.avi
 *.mov
 *.mkv
+
+# Day 6 - violation evidence (never committed)
+ai-model/outputs/violations/
+ai-model/outputs/violations/screenshots/
+ai-model/outputs/violations/violations_log.csv
+*.jpg
+*.jpeg
+*.png
+*.csv
