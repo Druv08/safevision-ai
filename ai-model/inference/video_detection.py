@@ -1,17 +1,38 @@
 """
-SafeVision AI - Day 5
+SafeVision AI - Day 5 / Day 8 update
 Local video / webcam PPE detection using TWO YOLOv8 models in parallel:
 
   1. SafeVision PPE model  (trained, 5 classes: person/helmet/no_helmet/vest/no_vest)
-     -> Detects PPE only: vest / no_vest / helmet / no_helmet boxes + counts.
+     -> Detects PPE objects: vest / no_vest / helmet / no_helmet boxes.
 
   2. YOLOv8 POSE model  (yolov8n-pose.pt, COCO pretrained)
      -> Detects real humans/workers by predicting body keypoints (nose,
         shoulders, hips, etc.). A worker is only counted when the model
         finds enough body keypoints, so a shirt hanging on a chair or a
-        person-shaped poster will NOT inflate the workers count -- a plain
-        bounding-box detector (yolov8n.pt) would happily count those as
-        people, which is exactly the false-positive problem we hit on Day 5.
+        person-shaped poster will NOT inflate the workers count.
+
+Day 8 inference fix - "is the vest actually WORN?"
+--------------------------------------------------
+Before this change the overlay counted a `vest` the moment the PPE model saw
+a vest-shaped object ANYWHERE in the frame. That produced two bugs:
+
+  * False vest count  -> a vest object lying around / held up counted as 1.
+  * Loose vest        -> a worker HOLDING a vest (not wearing it) was treated
+                         as compliant, when they should be `no_vest`.
+
+The fix changes the rule from "vest object detected anywhere" to:
+
+    A worker is WEARING a vest only if a vest box overlaps that worker's
+    torso/chest region enough AND the vest is centred in (or near) that region.
+
+So compliance is now decided PER WORKER:
+  * worker with a vest matched to their torso  -> counts as `vest`
+  * worker with no vest matched to their torso -> counts as `no_vest`
+A vest that matches no worker torso is a "loose" vest and is NOT counted as
+worn (optionally drawn in amber with --show-loose-vests).
+
+Events are now real violation events (not per-frame): a continuous `no_vest`
+worker is counted ONCE, using a small stateful tracker (cooldown + clear_after).
 
 Usage:
     # Webcam (default)
@@ -20,8 +41,9 @@ Usage:
     # Video file with saved output
     python ai-model/inference/video_detection.py --source path/to/video.mp4 --save
 
-    # Custom thresholds
-    python ai-model/inference/video_detection.py --conf 0.4 --pose-conf 0.5
+    # Tune the worn-vest / event logic
+    python ai-model/inference/video_detection.py --vest-overlap 0.25 \
+        --event-cooldown 5 --clear-after 2 --show-loose-vests
 
 Press 'q' in the video window to quit.
 
@@ -36,8 +58,6 @@ COCO pose keypoint indices (used by yolov8n-pose.pt):
     0  = nose
     5  = left_shoulder    6  = right_shoulder
     11 = left_hip         12 = right_hip
-    (full set is 17 keypoints; the five above are the ones we trust most
-     for deciding 'this is a real upright human'.)
 """
 
 import argparse
@@ -86,16 +106,19 @@ def _find_default_pose_model() -> str:
 
 DEFAULT_POSE_MODEL = _find_default_pose_model()
 
-# Color used to draw worker boxes (BGR). Distinct from PPE colors.
-WORKER_BOX_COLOR = (255, 200, 0)   # cyan-ish blue
+# ---- Colors (OpenCV uses BGR, not RGB) ------------------------------------
+WORKER_BOX_COLOR = (255, 200, 0)    # cyan-ish blue  -> every valid worker
+WORN_VEST_COLOR  = (0, 200, 0)      # green          -> vest matched to torso
+NO_VEST_COLOR    = (0, 0, 255)      # red            -> worker torso w/o vest
+LOOSE_VEST_COLOR = (0, 215, 255)    # amber/yellow   -> vest matched to nobody
+HELMET_COLOR     = (0, 200, 0)      # green
+NO_HELMET_COLOR  = (0, 0, 255)      # red
 
 # Default per-keypoint confidence threshold. A keypoint is counted as
 # "reliably visible" only when its confidence is >= this value.
 KEYPOINT_CONF_THRESHOLD = 0.4
 
 # Important COCO keypoint indices used to decide "is this really a person?".
-# A hanging shirt may produce a person-shaped box, but it will almost never
-# produce a confident nose/shoulders/hips combination.
 IMPORTANT_KEYPOINTS = {
     0:  "nose",
     5:  "left_shoulder",
@@ -117,14 +140,24 @@ CLASS_NAMES = {
     4: "no_vest",
 }
 
-# BGR colors per class (OpenCV uses BGR, not RGB)
-CLASS_COLORS = {
-    0: (255, 200, 0),    # person       -> cyan-ish (rarely used now)
-    1: (0, 200, 0),      # helmet       -> green (good)
-    2: (0, 0, 255),      # no_helmet    -> red   (violation)
-    3: (0, 200, 0),      # vest         -> green (good)
-    4: (0, 0, 255),      # no_vest      -> red   (violation)
-}
+# ---- Torso region geometry (fractions of the worker box) ------------------
+# The chest/upper-body area where a safety vest is actually worn. A vest must
+# overlap THIS region (not just the full-body box) to count as worn.
+#   x: middle 70% of the worker width  (drop 15% on each side)
+#   y: from 20% down to 65% of the worker height (chest band, not the legs)
+TORSO_X_INSET = 0.15
+TORSO_Y_TOP   = 0.20
+TORSO_Y_BOT   = 0.65
+
+# When checking "is the vest centred in the torso?", allow the centre to fall
+# slightly outside the torso box on the SIDES and BOTTOM only (never above the
+# chest start -- that is hard-rejected to kill face/head false positives).
+TORSO_NEAR_MARGIN = 0.15
+
+# At least this fraction of the vest box AREA must lie inside the worker box
+# for the vest to be considered "on" that worker. Rejects a vest held out to
+# the side / mostly outside the body.
+MIN_VEST_IN_WORKER = 0.60
 
 
 # ---------------------------------------------------------------------------
@@ -143,14 +176,29 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--conf",
         type=float,
-        default=0.25,
-        help="PPE-model confidence threshold (default: 0.25)",
+        default=0.50,
+        help=(
+            "PPE-model confidence threshold (default: 0.50). Raised from 0.25 "
+            "to drop low-confidence false vest/no_vest boxes. Override as "
+            "needed, e.g. --conf 0.55."
+        ),
     )
     parser.add_argument(
         "--pose-conf",
         type=float,
         default=0.5,
         help="YOLO pose person-box confidence threshold (default: 0.5)",
+    )
+    parser.add_argument(
+        "--ppe-worker-overlap",
+        type=float,
+        default=0.10,
+        help=(
+            "In default mode, a PPE box is only shown/counted if at least this "
+            "fraction of it overlaps a worker box (default: 0.10). Kept low "
+            "because PPE boxes are smaller than the worker box. If no worker "
+            "is detected, all PPE counts are 0."
+        ),
     )
     parser.add_argument(
         "--save",
@@ -167,61 +215,376 @@ def parse_args() -> argparse.Namespace:
         default=DEFAULT_POSE_MODEL,
         help="Path to YOLOv8 pose weights for worker detection (default: yolov8n-pose.pt)",
     )
+    # ---- Day 8: worn-vest + event-debounce knobs --------------------------
+    parser.add_argument(
+        "--strict-vest-matching",
+        action="store_true",
+        help=(
+            "OPT-IN: decide vest/no_vest per worker by matching a vest to the "
+            "worker's torso/chest region. Experimental and unstable on side "
+            "views / face-area boxes, so it is OFF by default. When off, the "
+            "stable raw-object detection (original behaviour) is used."
+        ),
+    )
+    parser.add_argument(
+        "--vest-overlap",
+        type=float,
+        default=0.40,
+        help=(
+            "Minimum overlap between a vest box and a worker's torso region "
+            "before the vest is counted as WORN (default: 0.40)."
+        ),
+    )
+    parser.add_argument(
+        "--event-cooldown",
+        type=float,
+        default=5.0,
+        help=(
+            "Minimum seconds between two counted no_vest violation events "
+            "(default: 5). Stops the events counter inflating every frame."
+        ),
+    )
+    parser.add_argument(
+        "--clear-after",
+        type=float,
+        default=2.0,
+        help=(
+            "Seconds a no_vest violation must be ABSENT before it can be "
+            "counted again as a NEW event (default: 2)."
+        ),
+    )
+    parser.add_argument(
+        "--show-loose-vests",
+        action="store_true",
+        help=(
+            "If set, draw vest boxes that did NOT match any worker torso "
+            "(loose / held vests) in amber. Off by default to avoid clutter."
+        ),
+    )
+    parser.add_argument(
+        "--show-torso",
+        action="store_true",
+        help=(
+            "Debug: draw the computed torso/chest region for each worker so "
+            "the worn-vest matching can be tuned live. Off by default."
+        ),
+    )
     return parser.parse_args()
 
 
 # ---------------------------------------------------------------------------
-# Drawing helpers
+# Geometry helpers (worn-vest matching)
 # ---------------------------------------------------------------------------
-def draw_detections(frame, result, counts: dict) -> None:
-    """Draw boxes + labels for one YOLO result onto `frame` in-place.
+def calculate_iou(box_a, box_b) -> float:
+    """Intersection-over-Union between two [x1, y1, x2, y2] boxes.
 
-    Also increments `counts` for every detection seen in this frame.
+    IoU is "how much do these two rectangles overlap?", as a number from
+    0.0 (no overlap) to 1.0 (identical box).
     """
-    if result.boxes is None or len(result.boxes) == 0:
-        return
+    ax1, ay1, ax2, ay2 = box_a
+    bx1, by1, bx2, by2 = box_b
 
-    # .xyxy gives [x1, y1, x2, y2] as a torch tensor, move to CPU + numpy
-    boxes = result.boxes.xyxy.cpu().numpy()
-    confs = result.boxes.conf.cpu().numpy()
-    cls_ids = result.boxes.cls.cpu().numpy().astype(int)
+    ix1 = max(ax1, bx1)
+    iy1 = max(ay1, by1)
+    ix2 = min(ax2, bx2)
+    iy2 = min(ay2, by2)
+
+    iw = max(0.0, ix2 - ix1)
+    ih = max(0.0, iy2 - iy1)
+    inter = iw * ih
+    if inter <= 0.0:
+        return 0.0
+
+    area_a = max(0.0, ax2 - ax1) * max(0.0, ay2 - ay1)
+    area_b = max(0.0, bx2 - bx1) * max(0.0, by2 - by1)
+    union = area_a + area_b - inter
+    if union <= 0.0:
+        return 0.0
+    return float(inter / union)
+
+
+def calculate_overlap_ratio(box_a, box_b) -> float:
+    """Fraction of `box_a`'s area that lies inside `box_b`.
+
+    This is NOT IoU. It answers "how much of box_a is covered by box_b?"
+    (intersection / area(box_a)), which is the signal we want when asking
+    whether a vest covers a (much larger or smaller) torso region.
+
+    Returns a value in [0.0, 1.0].
+    """
+    ax1, ay1, ax2, ay2 = box_a
+    bx1, by1, bx2, by2 = box_b
+
+    ix1 = max(ax1, bx1)
+    iy1 = max(ay1, by1)
+    ix2 = min(ax2, bx2)
+    iy2 = min(ay2, by2)
+
+    iw = max(0.0, ix2 - ix1)
+    ih = max(0.0, iy2 - iy1)
+    inter = iw * ih
+    if inter <= 0.0:
+        return 0.0
+
+    area_a = max(0.0, ax2 - ax1) * max(0.0, ay2 - ay1)
+    if area_a <= 0.0:
+        return 0.0
+    return float(inter / area_a)
+
+
+def ppe_overlaps_any_worker(ppe_box, worker_boxes, threshold: float = 0.10) -> bool:
+    """True if at least `threshold` of the PPE box lies inside ANY worker box.
+
+    Uses fraction-of-PPE-inside-worker (calculate_overlap_ratio(ppe, worker)),
+    so the threshold can stay low: a small vest box on a chest covers only a
+    little of the full-body worker box. This is what rejects background /
+    floating false PPE detections that don't sit on a person.
+    """
+    for wb in worker_boxes:
+        if calculate_overlap_ratio(ppe_box, wb) >= threshold:
+            return True
+    return False
+
+
+def filter_ppe_by_workers(dets, worker_boxes, threshold: float = 0.10):
+    """Keep only (box, conf) PPE detections that overlap a worker box.
+
+    If there are NO workers, returns [] -> all PPE counts become 0.
+    """
+    if not worker_boxes:
+        return []
+    return [
+        (box, conf) for (box, conf) in dets
+        if ppe_overlaps_any_worker(box, worker_boxes, threshold)
+    ]
+
+
+def get_worker_torso_box(worker_box):
+    """Approximate the chest/upper-body region inside a worker box.
+
+    Given a full-body worker box [x1, y1, x2, y2], return the torso region:
+        x1 = worker_x1 + 15% of width
+        x2 = worker_x2 - 15% of width
+        y1 = worker_y1 + 20% of height
+        y2 = worker_y1 + 65% of height
+
+    This is the band where a safety vest should actually sit. Matching a vest
+    against THIS (instead of the whole body) is what rejects a vest held low
+    in the hands or down by the legs.
+    """
+    x1, y1, x2, y2 = worker_box
+    w = x2 - x1
+    h = y2 - y1
+    tx1 = x1 + TORSO_X_INSET * w
+    tx2 = x2 - TORSO_X_INSET * w
+    ty1 = y1 + TORSO_Y_TOP * h
+    ty2 = y1 + TORSO_Y_BOT * h
+    return (tx1, ty1, tx2, ty2)
+
+
+def box_center_inside(box, region, margin: float = 0.0) -> bool:
+    """Is the centre of `box` inside `region` (optionally expanded by margin)?
+
+    `margin` grows the region by that fraction on each side, so a centre that
+    sits just outside still counts as "near" (the spec's "inside or near").
+    """
+    cx = (box[0] + box[2]) / 2.0
+    cy = (box[1] + box[3]) / 2.0
+    rx1, ry1, rx2, ry2 = region
+    if margin:
+        rw = rx2 - rx1
+        rh = ry2 - ry1
+        rx1 -= rw * margin
+        rx2 += rw * margin
+        ry1 -= rh * margin
+        ry2 += rh * margin
+    return (rx1 <= cx <= rx2) and (ry1 <= cy <= ry2)
+
+
+def vest_matches_worker_torso(
+    vest_box, worker_box, torso_box, overlap_threshold: float = 0.40
+) -> bool:
+    """Decide whether a vest box is being WORN on a worker's torso.
+
+    Strict rule -- a vest counts as worn ONLY if ALL of these pass:
+
+      1. The vest centre is inside the worker bounding box.
+      2. The vest centre is inside the torso box, or very close to it (a small
+         margin on the SIDES and BOTTOM only).
+      3. The vest overlaps the torso box by at least `overlap_threshold`.
+      4. The vest is NOT too high: its centre must be at/below the chest-start
+         (torso top). This kills face/head false-positive vests.
+      5. The vest is NOT too low or too side-heavy: its centre must stay within
+         the central torso column (+ small margin) and not drop below the
+         torso bottom (+ small margin).
+      6. The vest is mostly ON the worker: at least `MIN_VEST_IN_WORKER`
+         (60%) of the vest box area lies inside the worker box.
+
+    A vest held in the hand, by the side, low, or up near the face fails one
+    of these gates and is therefore treated as a loose (not worn) vest.
+    """
+    tx1, ty1, tx2, ty2 = torso_box
+    vcx = (vest_box[0] + vest_box[2]) / 2.0
+    vcy = (vest_box[1] + vest_box[3]) / 2.0
+
+    # (1) vest centre inside the worker box
+    if not box_center_inside(vest_box, worker_box):
+        return False
+
+    # Small tolerance for "near torso" -- sides + bottom only (never the top).
+    tw = tx2 - tx1
+    th = ty2 - ty1
+    mx = TORSO_NEAR_MARGIN * tw
+    my = TORSO_NEAR_MARGIN * th
+
+    # (4) reject too-high vests (face/head): centre must not be above chest top
+    if vcy < ty1:
+        return False
+
+    # (5) reject too-low / too-side vests
+    if vcy > ty2 + my:
+        return False
+    if vcx < tx1 - mx or vcx > tx2 + mx:
+        return False
+
+    # (2) by reaching here the centre is within
+    #     [tx1 - mx, tx2 + mx] x [ty1, ty2 + my]  -> inside/near the torso.
+
+    # (3) vest must overlap the torso region by at least the threshold
+    torso_cover = calculate_overlap_ratio(torso_box, vest_box)  # inter / torso_area
+    vest_inside = calculate_overlap_ratio(vest_box, torso_box)  # inter / vest_area
+    if max(torso_cover, vest_inside) < overlap_threshold:
+        return False
+
+    # (6) at least 60% of the vest area must lie inside the worker box
+    if calculate_overlap_ratio(vest_box, worker_box) < MIN_VEST_IN_WORKER:
+        return False
+
+    return True
+
+
+def assign_vests_to_workers(worker_boxes, vest_boxes, overlap_threshold: float = 0.40):
+    """Match vest boxes to worker torsos and decide each worker's vest status.
+
+    Returns:
+        worker_status : list (parallel to `worker_boxes`) of dicts:
+            {
+              "worker_box": (x1,y1,x2,y2),
+              "torso_box":  (x1,y1,x2,y2),
+              "vest_status": "vest" | "no_vest",
+              "vest_box":    (x1,y1,x2,y2) | None,   # the matched vest, if any
+            }
+        matched_vest_idx : set of indices into `vest_boxes` that got matched
+            to at least one worker. Any vest index NOT in this set is a
+            "loose" vest (matched nobody).
+    """
+    worker_status = []
+    matched_vest_idx: set = set()
+
+    for wb in worker_boxes:
+        torso = get_worker_torso_box(wb)
+        best_idx = None
+        best_score = 0.0
+        for vi, vb in enumerate(vest_boxes):
+            if not vest_matches_worker_torso(vb, wb, torso, overlap_threshold):
+                continue
+            # Among all matching vests, keep the one that covers the chest most.
+            score = calculate_overlap_ratio(torso, vb)
+            if score > best_score:
+                best_score = score
+                best_idx = vi
+
+        if best_idx is not None:
+            matched_vest_idx.add(best_idx)
+            worker_status.append({
+                "worker_box": wb,
+                "torso_box": torso,
+                "vest_status": "vest",
+                "vest_box": vest_boxes[best_idx],
+            })
+        else:
+            worker_status.append({
+                "worker_box": wb,
+                "torso_box": torso,
+                "vest_status": "no_vest",
+                "vest_box": None,
+            })
+
+    return worker_status, matched_vest_idx
+
+
+# ---------------------------------------------------------------------------
+# Stateful no_vest violation tracker (real events, not per-frame)
+# ---------------------------------------------------------------------------
+class ViolationTracker:
+    """Count no_vest violations as discrete EVENTS, not per frame.
+
+    The webcam runs ~25-30 frames/sec. A naive counter that bumps every frame
+    a violation is visible would race up by ~30/second for one standing
+    worker. Instead we treat a continuously-visible no_vest as a SINGLE event:
+
+      * While at least one no_vest worker is visible, the violation is
+        "active" and we do not count it again.
+      * The violation only "clears" after no_vest has been ABSENT for
+        `clear_after` seconds (this debounces a worker who flickers out of
+        detection for a frame or two).
+      * After it clears and reappears, a NEW event is counted -- but only if
+        at least `cooldown` seconds have passed since the last counted event
+        (a safety net against rapid re-triggering).
+    """
+
+    def __init__(self, cooldown: float = 5.0, clear_after: float = 2.0):
+        self.cooldown = cooldown
+        self.clear_after = clear_after
+        self.active_no_vest = False     # is a no_vest violation currently open?
+        self.last_seen_time = 0.0       # last time a no_vest worker was visible
+        self.last_event_time = -1e9     # last time we counted an event
+        self.total_events = 0
+
+    def update(self, no_vest_count: int, now: float) -> bool:
+        """Feed the current frame's no_vest worker count. Returns True if a
+        NEW event was counted this frame."""
+        new_event = False
+        if no_vest_count > 0:
+            self.last_seen_time = now
+            if not self.active_no_vest:
+                # Rising edge of a violation. Count it if cooldown allows.
+                if (now - self.last_event_time) >= self.cooldown:
+                    self.total_events += 1
+                    self.last_event_time = now
+                    new_event = True
+                # Mark active either way, so we don't retry every frame.
+                self.active_no_vest = True
+        else:
+            # No violation visible this frame. Clear it once it has been gone
+            # long enough, so the next appearance can count again.
+            if self.active_no_vest and (now - self.last_seen_time) >= self.clear_after:
+                self.active_no_vest = False
+        return new_event
+
+
+# ---------------------------------------------------------------------------
+# Detection extraction
+# ---------------------------------------------------------------------------
+def get_ppe_boxes(ppe_result) -> dict:
+    """Turn one PPE YOLO result into class-keyed lists of (box, conf).
+
+    Returns: {class_name: [((x1,y1,x2,y2), conf), ...], ...}
+    """
+    out: dict = {name: [] for name in CLASS_NAMES.values()}
+    if ppe_result.boxes is None or len(ppe_result.boxes) == 0:
+        return out
+
+    boxes = ppe_result.boxes.xyxy.cpu().numpy()
+    confs = ppe_result.boxes.conf.cpu().numpy()
+    cls_ids = ppe_result.boxes.cls.cpu().numpy().astype(int)
 
     for (x1, y1, x2, y2), conf, cls_id in zip(boxes, confs, cls_ids):
-        name = CLASS_NAMES.get(int(cls_id), f"id_{cls_id}")
-        color = CLASS_COLORS.get(int(cls_id), (255, 255, 255))
-
-        # Bounding box
-        cv2.rectangle(
-            frame,
-            (int(x1), int(y1)),
-            (int(x2), int(y2)),
-            color,
-            2,
-        )
-
-        # Label background + text
-        label = f"{name} {conf:.2f}"
-        (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
-        cv2.rectangle(
-            frame,
-            (int(x1), int(y1) - th - 6),
-            (int(x1) + tw + 4, int(y1)),
-            color,
-            -1,
-        )
-        cv2.putText(
-            frame,
-            label,
-            (int(x1) + 2, int(y1) - 4),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.5,
-            (0, 0, 0),
-            1,
-            cv2.LINE_AA,
-        )
-
-        # Track running totals (so we can print a summary at the end)
-        counts[name] = counts.get(name, 0) + 1
+        name = CLASS_NAMES.get(int(cls_id))
+        if name is None:
+            continue
+        out[name].append(((float(x1), float(y1), float(x2), float(y2)), float(conf)))
+    return out
 
 
 def is_valid_worker_pose(
@@ -231,35 +594,14 @@ def is_valid_worker_pose(
 ) -> bool:
     """Decide whether a single pose detection looks like a real human.
 
-    Why this exists:
-        A plain object detector (e.g. yolov8n.pt) sometimes labels a shirt
-        hanging on a chair as `person` with surprisingly high confidence,
-        which inflates the workers count. A pose model is much better at
-        rejecting these false positives because clothing-on-a-hanger does
-        NOT have a confident nose + shoulders + hips pattern.
-
-    How it works:
-        We look at five "important" COCO keypoints (nose, left/right
-        shoulder, left/right hip). If at least `min_important` of those
-        have per-keypoint confidence >= `keypoint_conf_threshold`, we
-        accept the detection as a real worker.
-
-    Args:
-        keypoints_conf: 1-D array-like of length 17 with per-keypoint
-                        confidence scores for one person, as returned by
-                        Ultralytics (`result.keypoints.conf[i]`).
-        keypoint_conf_threshold: A keypoint is "visible" if its confidence
-                        is at least this value (default 0.4).
-        min_important: How many of the important keypoints must be visible
-                        (default 3 out of 5).
-
-    Returns:
-        True if the detection passes the keypoint sanity check.
+    We look at five "important" COCO keypoints (nose, left/right shoulder,
+    left/right hip). If at least `min_important` of those have per-keypoint
+    confidence >= `keypoint_conf_threshold`, we accept it as a real worker.
+    This rejects hanging shirts / posters that fool a plain box detector.
     """
     if keypoints_conf is None:
         return False
     arr = np.asarray(keypoints_conf).flatten()
-    # Defensive: pose model should return 17 keypoints per person.
     if arr.size < max(IMPORTANT_KEYPOINTS) + 1:
         return False
 
@@ -270,110 +612,67 @@ def is_valid_worker_pose(
     return visible >= min_important
 
 
-def draw_worker_poses(
-    frame,
-    result,
+def get_valid_worker_boxes(
+    pose_result,
     pose_conf: float,
     keypoint_conf_threshold: float = KEYPOINT_CONF_THRESHOLD,
-) -> int:
-    """Draw 'worker' boxes for VALID pose detections and return the count.
+):
+    """Return [((x1,y1,x2,y2), conf), ...] for pose detections that pass BOTH
+    the box-confidence gate and the keypoint sanity check."""
+    workers = []
+    if pose_result is None or pose_result.boxes is None or len(pose_result.boxes) == 0:
+        return workers
+    if pose_result.keypoints is None:
+        return workers
 
-    A detection is only drawn / counted when BOTH of these are true:
-        1. The pose model's person-box confidence is >= `pose_conf`.
-        2. At least MIN_IMPORTANT_KEYPOINTS of the important keypoints
-           (nose, shoulders, hips) are visible with confidence
-           >= `keypoint_conf_threshold` (see `is_valid_worker_pose`).
-
-    This is what lets us reject a shirt on a chair: the box may exist with
-    decent confidence, but the keypoints will not line up with a real body.
-    """
-    if result.boxes is None or len(result.boxes) == 0:
-        return 0
-    if result.keypoints is None:
-        return 0
-
-    boxes = result.boxes.xyxy.cpu().numpy()
-    confs = result.boxes.conf.cpu().numpy()
-
-    # Keypoint confidences: shape (N_people, 17)
-    kp_conf_all = result.keypoints.conf
+    boxes = pose_result.boxes.xyxy.cpu().numpy()
+    confs = pose_result.boxes.conf.cpu().numpy()
+    kp_conf_all = pose_result.keypoints.conf
     if kp_conf_all is None:
-        return 0
+        return workers
     kp_conf_all = kp_conf_all.cpu().numpy()
 
-    n_workers = 0
     for i, ((x1, y1, x2, y2), conf) in enumerate(zip(boxes, confs)):
-        # Gate 1: box confidence
         if conf < pose_conf:
             continue
-
-        # Gate 2: keypoint sanity check
         if i >= len(kp_conf_all):
             continue
         if not is_valid_worker_pose(kp_conf_all[i], keypoint_conf_threshold):
             continue
-
-        n_workers += 1
-
-        cv2.rectangle(
-            frame,
-            (int(x1), int(y1)),
-            (int(x2), int(y2)),
-            WORKER_BOX_COLOR,
-            2,
-        )
-
-        label = f"worker {conf:.2f}"
-        (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
-        cv2.rectangle(
-            frame,
-            (int(x1), int(y1) - th - 6),
-            (int(x1) + tw + 4, int(y1)),
-            WORKER_BOX_COLOR,
-            -1,
-        )
-        cv2.putText(
-            frame,
-            label,
-            (int(x1) + 2, int(y1) - 4),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.5,
-            (0, 0, 0),
-            1,
-            cv2.LINE_AA,
-        )
-
-    return n_workers
+        workers.append(((float(x1), float(y1), float(x2), float(y2)), float(conf)))
+    return workers
 
 
-def draw_hud(frame, fps: float, frame_counts: dict, event_counts: dict, workers_n: int) -> None:
+# ---------------------------------------------------------------------------
+# Drawing helpers
+# ---------------------------------------------------------------------------
+def _draw_labeled_box(frame, box, text, color, thickness: int = 2) -> None:
+    """Draw a rectangle + filled label tag for one box."""
+    x1, y1, x2, y2 = (int(v) for v in box)
+    cv2.rectangle(frame, (x1, y1), (x2, y2), color, thickness)
+    (tw, th), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
+    cv2.rectangle(frame, (x1, y1 - th - 6), (x1 + tw + 4, y1), color, -1)
+    cv2.putText(
+        frame, text, (x1 + 2, y1 - 4),
+        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 1, cv2.LINE_AA,
+    )
+
+
+def draw_hud(frame, fps: float, display: dict, workers_n: int) -> None:
     """Draw a compact VERTICAL HUD in the top-left corner.
 
-    Layout (one row per line):
-        FPS: <value>          (yellow)
-        workers: <count>      (white)   <- from the COCO person detector
-        vest: <count>         (green if >0 else white)
-        no_vest: <count>      (red   if >0 else white)
-        helmet: <count>       (green if >0 else white)
-        no_helmet: <count>    (red   if >0 else white)
-        events: <total>       (white)   <- sum of all rising-edge events so far
-
-    `workers_n` is supplied by the caller from the YOLO POSE model
-    (NOT from vest + no_vest), because the SafeVision model's own `person`
-    class is too weak and a plain box detector can mistake hanging clothes
-    for a person. The pose model only counts a worker when enough body
-    keypoints (nose / shoulders / hips) are visible, so a vest held up to
-    the camera with no person behind it correctly stays at `workers: 0`.
-
-    The counts on rows 3-6 are CURRENT-FRAME counts (they reset every frame).
-    The `events` row is the cumulative rising-edge total across the run.
+    `display` carries COMPLIANCE counts (not raw object counts):
+        vest      -> number of workers WEARING a vest (matched to torso)
+        no_vest   -> number of workers NOT wearing a vest
+        helmet    -> raw helmet object count (kept as-is for now)
+        no_helmet -> raw no_helmet object count (kept as-is for now)
+        events    -> cumulative real no_vest violation events
     """
-    # ---- Build the lines + their colors ------------------------------------
-    vest_n      = frame_counts.get("vest",      0)
-    no_vest_n   = frame_counts.get("no_vest",   0)
-    helmet_n    = frame_counts.get("helmet",    0)
-    no_helmet_n = frame_counts.get("no_helmet", 0)
-    total_events = sum(event_counts.values())
+    vest_n      = display.get("vest",      0)
+    no_vest_n   = display.get("no_vest",   0)
+    helmet_n    = display.get("helmet",    0)
+    no_helmet_n = display.get("no_helmet", 0)
+    total_events = display.get("events",   0)
 
     WHITE  = (255, 255, 255)
     YELLOW = (0,   255, 255)
@@ -387,40 +686,32 @@ def draw_hud(frame, fps: float, frame_counts: dict, event_counts: dict, workers_
         (f"no_vest: {no_vest_n}",    RED   if no_vest_n   > 0 else WHITE),
         (f"helmet: {helmet_n}",      GREEN if helmet_n    > 0 else WHITE),
         (f"no_helmet: {no_helmet_n}",RED   if no_helmet_n > 0 else WHITE),
-        (f"events: {total_events}",  WHITE),
+        (f"events: {total_events}",  RED   if total_events > 0 else WHITE),
     ]
 
-    # ---- Layout constants --------------------------------------------------
-    x0, y0      = 20, 30        # top-left anchor (y0 = baseline of first text line)
+    x0, y0      = 20, 30
     font        = cv2.FONT_HERSHEY_SIMPLEX
     font_scale  = 0.7
     thickness   = 2
-    line_h      = 30            # vertical spacing between baselines
-    pad         = 12            # padding inside the dark panel
+    line_h      = 30
+    pad         = 12
 
-    # ---- Dynamic background panel sized to longest line --------------------
     max_text_w = max(
         cv2.getTextSize(text, font, font_scale, thickness)[0][0]
         for text, _ in lines
     )
-    # Approximate text height (top line baseline at y0 -> top of panel above it)
     panel_left   = x0 - pad
-    panel_top    = y0 - line_h + (line_h - pad) // 2 - pad  # extra pad above first line
-    panel_top    = max(panel_top, 0)
+    panel_top    = max(y0 - line_h + (line_h - pad) // 2 - pad, 0)
     panel_right  = x0 + max_text_w + pad
     panel_bottom = y0 + line_h * (len(lines) - 1) + pad
 
     overlay = frame.copy()
     cv2.rectangle(
-        overlay,
-        (panel_left, panel_top),
-        (panel_right, panel_bottom),
-        (0, 0, 0),
-        -1,
+        overlay, (panel_left, panel_top), (panel_right, panel_bottom),
+        (0, 0, 0), -1,
     )
     cv2.addWeighted(overlay, 0.55, frame, 0.45, 0, frame)
 
-    # ---- Draw each text line ----------------------------------------------
     for i, (text, color) in enumerate(lines):
         y = y0 + i * line_h
         cv2.putText(
@@ -446,14 +737,6 @@ def main() -> int:
         source_desc = f"file '{source}'"
 
     # --- Load models --------------------------------------------------------
-    # We load TWO YOLO models:
-    #   ppe_model  -> the SafeVision-trained 5-class model. Detects the actual
-    #                 PPE classes (vest / no_vest / helmet / no_helmet).
-    #   pose_model -> stock COCO-trained yolov8n-pose.pt. Detects real humans
-    #                 by predicting body keypoints. A worker is only counted
-    #                 when enough keypoints (nose / shoulders / hips) are
-    #                 visible -- this rejects hanging shirts / posters that
-    #                 fool a plain box detector.
     model_path = Path(args.model)
     if not model_path.exists():
         print(f"[ERROR] PPE model weights not found: {model_path}")
@@ -469,8 +752,6 @@ def main() -> int:
 
     print(f"[INFO] Loading pose model: {args.pose_model}")
     try:
-        # If `args.pose_model` is just the bare name 'yolov8n-pose.pt' and
-        # nothing local matches, Ultralytics will auto-download it (~6 MB).
         pose_model = YOLO(args.pose_model)
     except Exception as exc:
         print(f"[ERROR] Failed to load pose model: {exc}")
@@ -482,6 +763,18 @@ def main() -> int:
         f"Keypoint conf: {KEYPOINT_CONF_THRESHOLD:.2f} "
         f"(need {MIN_IMPORTANT_KEYPOINTS}/{len(IMPORTANT_KEYPOINTS)} important keypoints)"
     )
+    # ---- Day 8 worn-vest / event-logic startup summary --------------------
+    if args.strict_vest_matching:
+        print("[INFO] Vest matching mode    : STRICT torso overlap (experimental)")
+        print(f"[INFO] Vest overlap threshold: {args.vest_overlap:.2f}")
+        print(f"[INFO] Show loose vests      : {args.show_loose_vests}")
+        print(f"[INFO] Show torso (debug)    : {args.show_torso}")
+    else:
+        print("[INFO] Vest matching mode    : stable (raw PPE objects) [default]")
+        print(f"[INFO] PPE-worker overlap    : {args.ppe_worker_overlap:.2f} "
+              f"(PPE shown/counted only on a worker; 0 if no workers)")
+    print(f"[INFO] Event cooldown (s)    : {args.event_cooldown:.1f}")
+    print(f"[INFO] Clear-after (s)       : {args.clear_after:.1f}")
 
     # --- Open video source --------------------------------------------------
     print(f"[INFO] Opening source: {source_desc}")
@@ -502,10 +795,7 @@ def main() -> int:
         OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
         out_path = OUTPUT_DIR / f"safevision_output_{ts}.mp4"
-
-        # Use 'mp4v' codec (broadly available on Windows with OpenCV)
         fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-        # Use a sensible fps if the source didn't report one (webcams often don't)
         save_fps = in_fps if in_fps and in_fps > 1 else 20.0
         writer = cv2.VideoWriter(str(out_path), fourcc, save_fps, (in_w, in_h))
         if not writer.isOpened():
@@ -518,24 +808,11 @@ def main() -> int:
     win_name = "SafeVision AI - press 'q' to quit"
     cv2.namedWindow(win_name, cv2.WINDOW_NORMAL)
 
-    # We keep TWO separate counters:
-    #   frame_counts -> reset to 0 at the start of every frame. Reflects ONLY
-    #                   what is visible in the current frame. Used by the
-    #                   "Current" row of the overlay.
-    #   event_counts -> rising-edge counter. A class only adds +1 the moment it
-    #                   APPEARS in the current frame after being absent in the
-    #                   previous frame. This avoids the misleading behaviour of
-    #                   a per-frame cumulative counter, which would inflate by
-    #                   ~25 per second for any persistent detection.
-    #
-    # Example: if someone walks into frame wearing a vest and stays there for
-    # 10 seconds, `frame_counts['vest']` is 1 the whole time and
-    # `event_counts['vest']` increments by exactly 1 (one appearance).
-    # If they leave and come back, `event_counts['vest']` becomes 2.
-    # We only track events for the overlay classes (no `person`).
-    event_classes = ["vest", "no_vest", "helmet", "no_helmet"]
-    event_counts: dict = {name: 0 for name in event_classes}
-    prev_present: dict = {name: False for name in event_classes}
+    # Stateful no_vest event tracker (real events, not per-frame).
+    tracker = ViolationTracker(
+        cooldown=args.event_cooldown,
+        clear_after=args.clear_after,
+    )
 
     frames_processed = 0
     last_t = time.time()
@@ -545,18 +822,13 @@ def main() -> int:
         while True:
             ok, frame = cap.read()
             if not ok or frame is None:
-                # End of video file, or webcam read failure
                 print("[INFO] No more frames (end of stream).")
                 break
 
-            # Run YOLO on the single frame.
-            # verbose=False keeps the terminal clean.
-            # We run BOTH models on the same frame: PPE first, then person.
+            # Run BOTH models on the same frame: PPE first, then pose.
             try:
                 ppe_results = model.predict(
-                    source=frame,
-                    conf=args.conf,
-                    verbose=False,
+                    source=frame, conf=args.conf, verbose=False,
                 )
             except Exception as exc:
                 print(f"[WARN] PPE inference failed on a frame: {exc}")
@@ -564,50 +836,130 @@ def main() -> int:
 
             try:
                 pose_results = pose_model.predict(
-                    source=frame,
-                    conf=args.pose_conf,
-                    verbose=False,
+                    source=frame, conf=args.pose_conf, verbose=False,
                 )
             except Exception as exc:
                 print(f"[WARN] Pose inference failed on a frame: {exc}")
                 pose_results = None
 
-            # results is a list; for a single frame we just take the first item
             ppe_result = ppe_results[0]
 
-            # Reset per-frame counts to zero, then let draw_detections fill them in
-            # while it draws boxes. This guarantees "Current" reflects ONLY this frame.
-            frame_counts: dict = {name: 0 for name in CLASS_NAMES.values()}
-            draw_detections(frame, ppe_result, frame_counts)
+            # ---- 1) Collect raw PPE objects (still detected as before) -----
+            ppe_boxes = get_ppe_boxes(ppe_result)
+            vest_boxes    = [b for b, _ in ppe_boxes["vest"]]
+            helmet_dets   = ppe_boxes["helmet"]      # (box, conf) list
+            no_helmet_dets = ppe_boxes["no_helmet"]  # (box, conf) list
 
-            # Draw worker boxes from the pose model and get the count.
-            # The keypoint sanity check inside rejects hanging shirts/posters.
-            if pose_results is not None:
-                workers_n = draw_worker_poses(
-                    frame, pose_results[0], args.pose_conf
+            # ---- 2) Valid workers from the pose model ----------------------
+            workers = (
+                get_valid_worker_boxes(pose_results[0], args.pose_conf)
+                if pose_results is not None else []
+            )
+            worker_boxes = [wb for wb, _ in workers]
+            workers_n = len(worker_boxes)
+
+            # ---- 3) Vest / PPE handling: stable (default) or strict mode ---
+            if args.strict_vest_matching:
+                # STRICT (optional, may be unstable): decide vest/no_vest PER
+                # WORKER by matching a vest to the worker's torso/chest region.
+                # Known instability on side views / face-area false boxes, so
+                # this is OFF by default. Enable with --strict-vest-matching.
+                # helmet / no_helmet stay raw here (experimental mode).
+                helmet_n    = len(helmet_dets)
+                no_helmet_n = len(no_helmet_dets)
+                for box, conf in helmet_dets:
+                    _draw_labeled_box(frame, box, f"helmet {conf:.2f}", HELMET_COLOR)
+                for box, conf in no_helmet_dets:
+                    _draw_labeled_box(frame, box, f"no_helmet {conf:.2f}", NO_HELMET_COLOR)
+
+                worker_status, matched_vest_idx = assign_vests_to_workers(
+                    worker_boxes, vest_boxes, overlap_threshold=args.vest_overlap
                 )
+                vest_worn_n = sum(1 for w in worker_status if w["vest_status"] == "vest")
+                no_vest_n   = sum(1 for w in worker_status if w["vest_status"] == "no_vest")
+
+                for (wb, wconf), status in zip(workers, worker_status):
+                    _draw_labeled_box(frame, wb, f"worker {wconf:.2f}", WORKER_BOX_COLOR)
+                    # Debug: draw the torso/chest region used for vest matching.
+                    if args.show_torso:
+                        tb = status["torso_box"]
+                        cv2.rectangle(
+                            frame,
+                            (int(tb[0]), int(tb[1])), (int(tb[2]), int(tb[3])),
+                            (200, 200, 200), 1,
+                        )
+                    if status["vest_status"] == "vest":
+                        _draw_labeled_box(
+                            frame, status["vest_box"], "vest (worn)", WORN_VEST_COLOR
+                        )
+                    else:
+                        _draw_labeled_box(
+                            frame, status["torso_box"], "NO VEST", NO_VEST_COLOR
+                        )
+
+                # Loose / unmatched vests (optional).
+                if args.show_loose_vests:
+                    for vi, vb in enumerate(vest_boxes):
+                        if vi not in matched_vest_idx:
+                            _draw_labeled_box(frame, vb, "loose vest", LOOSE_VEST_COLOR)
             else:
-                workers_n = 0
+                # STABLE DEFAULT (demo-safe): raw PPE boxes, BUT only the ones
+                # that sit on a real worker. A PPE box is drawn + counted only
+                # if it overlaps a worker box by >= --ppe-worker-overlap. With
+                # no workers, nothing passes -> every PPE count is 0. This kills
+                # background bottle/logo/face false detections and the "vest
+                # counted while workers = 0" bug. No torso matching here.
+                ov = args.ppe_worker_overlap
+                vest_keep      = filter_ppe_by_workers(ppe_boxes["vest"],    worker_boxes, ov)
+                no_vest_keep   = filter_ppe_by_workers(ppe_boxes["no_vest"], worker_boxes, ov)
+                helmet_keep    = filter_ppe_by_workers(helmet_dets,          worker_boxes, ov)
+                no_helmet_keep = filter_ppe_by_workers(no_helmet_dets,       worker_boxes, ov)
 
-            # Rising-edge event tracking: a class scores +1 the FIRST frame it
-            # becomes present after a frame in which it was absent.
-            for name in event_classes:
-                present_now = frame_counts.get(name, 0) > 0
-                if present_now and not prev_present[name]:
-                    event_counts[name] += 1
-                prev_present[name] = present_now
+                for box, conf in helmet_keep:
+                    _draw_labeled_box(frame, box, f"helmet {conf:.2f}", HELMET_COLOR)
+                for box, conf in no_helmet_keep:
+                    _draw_labeled_box(frame, box, f"no_helmet {conf:.2f}", NO_HELMET_COLOR)
+                for box, conf in vest_keep:
+                    _draw_labeled_box(frame, box, f"vest {conf:.2f}", WORN_VEST_COLOR)
+                for box, conf in no_vest_keep:
+                    _draw_labeled_box(frame, box, f"no_vest {conf:.2f}", NO_VEST_COLOR)
 
-            # FPS (exponential moving average for a smoother number)
+                vest_worn_n = len(vest_keep)
+                no_vest_n   = len(no_vest_keep)
+                helmet_n    = len(helmet_keep)
+                no_helmet_n = len(no_helmet_keep)
+
+                # Worker boxes (cyan) from the pose model.
+                for wb, wconf in workers:
+                    _draw_labeled_box(frame, wb, f"worker {wconf:.2f}", WORKER_BOX_COLOR)
+
+            # ---- 5) Events: debounced no_vest counter (kept in BOTH modes) -
+            # The cooldown/clear-after tracker only changes the `events`
+            # number, never the boxes, so it is demo-safe in default mode too.
+            # In default mode it is driven by raw no_vest object presence; in
+            # strict mode by the per-worker no_vest count.
             now = time.time()
+            tracker.update(no_vest_n, now)
+
+            # ---- FPS (exponential moving average) --------------------------
             dt = now - last_t
             last_t = now
             if dt > 0:
                 inst_fps = 1.0 / dt
                 fps_smoothed = (
-                    inst_fps if fps_smoothed == 0.0 else 0.9 * fps_smoothed + 0.1 * inst_fps
+                    inst_fps if fps_smoothed == 0.0
+                    else 0.9 * fps_smoothed + 0.1 * inst_fps
                 )
 
-            draw_hud(frame, fps_smoothed, frame_counts, event_counts, workers_n)
+            # ---- HUD (compliance counts, not raw object counts) ------------
+            display = {
+                "vest": vest_worn_n,
+                "no_vest": no_vest_n,
+                "helmet": helmet_n,
+                "no_helmet": no_helmet_n,
+                "events": tracker.total_events,
+            }
+            draw_hud(frame, fps_smoothed, display, workers_n)
 
             # Show + (optionally) save
             cv2.imshow(win_name, frame)
@@ -616,13 +968,10 @@ def main() -> int:
 
             frames_processed += 1
 
-            # 'q' to quit. waitKey(1) is required to actually render the window.
             key = cv2.waitKey(1) & 0xFF
             if key == ord("q"):
                 print("[INFO] 'q' pressed, exiting.")
                 break
-
-            # Also exit if user closed the window via the X button
             if cv2.getWindowProperty(win_name, cv2.WND_PROP_VISIBLE) < 1:
                 print("[INFO] Window closed, exiting.")
                 break
@@ -632,7 +981,6 @@ def main() -> int:
     except Exception as exc:
         print(f"[ERROR] Unexpected error in main loop: {exc}")
     finally:
-        # --- Cleanup --------------------------------------------------------
         cap.release()
         if writer is not None:
             writer.release()
@@ -642,18 +990,23 @@ def main() -> int:
         print("\n" + "=" * 50)
         print("SafeVision AI - run summary")
         print("=" * 50)
-        print(f"Frames processed  : {frames_processed}")
-        print(f"Avg FPS (smoothed): {fps_smoothed:.2f}")
+        print(f"Frames processed     : {frames_processed}")
+        print(f"Avg FPS (smoothed)   : {fps_smoothed:.2f}")
         print("")
-        print("Event totals (one count per appearance, NOT per frame):")
-        for name in ["vest", "no_vest", "helmet", "no_helmet"]:
-            print(f"  {name:<10}: {event_counts.get(name, 0)}")
+        print(f"no_vest violation events : {tracker.total_events}")
         print("")
-        print("Note: an 'event' is a rising edge - the class went from absent")
-        print("      in the previous frame to present in the current frame.")
-        print("      Per-frame live counts are not summarised here.")
+        if args.strict_vest_matching:
+            print("Mode: STRICT torso overlap (experimental). Vest counts as")
+            print("WORN only when a vest box overlaps a worker's torso/chest")
+            print(f"region (overlap >= {args.vest_overlap:.2f}) and is centred there.")
+        else:
+            print("Mode: stable raw-object detection [default]. Vest/no_vest")
+            print("counts are raw PPE detections (demo-safe). Strict per-worker")
+            print("torso matching is available via --strict-vest-matching.")
+        print(f"Events are debounced (clear_after={args.clear_after:.1f}s, "
+              f"cooldown={args.event_cooldown:.1f}s).")
         if writer is not None and out_path is not None:
-            print(f"Saved output      : {out_path}")
+            print(f"Saved output         : {out_path}")
         print("=" * 50)
 
     return 0

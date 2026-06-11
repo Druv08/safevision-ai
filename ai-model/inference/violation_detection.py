@@ -206,10 +206,41 @@ def parse_args() -> argparse.Namespace:
         help=(
             "Minimum fraction of a PPE-violation box (no_vest / no_helmet) "
             "that must lie inside a worker box before the violation is "
-            "saved (default: 0.3 = 30%). Detections with no worker match "
+            "saved (default: 0.3 = 30%%). Detections with no worker match "
             "are still drawn on screen, but are NOT screenshot/logged. "
             "This stops loose clothing or standalone vests from being "
             "counted as worker violations."
+        ),
+    )
+    parser.add_argument(
+        "--strict-vest-matching",
+        action="store_true",
+        help=(
+            "OPT-IN: also flag a worker as no_vest when no vest is WORN on "
+            "their torso (catches the 'held vest' case). Experimental and "
+            "unstable on side views / face-area boxes, so it is OFF by "
+            "default. When off, only the model's own no_vest class (gated by "
+            "worker overlap) is used -- the stable Day 6.5 behaviour."
+        ),
+    )
+    parser.add_argument(
+        "--vest-overlap",
+        type=float,
+        default=0.40,
+        help=(
+            "Minimum overlap between a vest box and a worker's torso/chest "
+            "region before the vest counts as WORN (default: 0.40). Only used "
+            "when --strict-vest-matching is enabled. A worker with no vest "
+            "worn on their torso is then treated as no_vest even if the model "
+            "only emitted a `vest` box (the 'held vest' case)."
+        ),
+    )
+    parser.add_argument(
+        "--show-torso",
+        action="store_true",
+        help=(
+            "Debug: draw the computed torso/chest region for each worker so "
+            "the worn-vest matching can be tuned live. Off by default."
         ),
     )
     parser.add_argument(
@@ -575,6 +606,123 @@ def ppe_matches_worker(ppe_box, worker_boxes, overlap_threshold: float = 0.3) ->
 
 
 # ---------------------------------------------------------------------------
+# Torso-based worn-vest check (Day 8)
+# ---------------------------------------------------------------------------
+# The model's `no_vest` class does NOT cover the "worker is HOLDING a vest"
+# case: it sees a vest-shaped object and stays quiet, so the worker looks
+# compliant. These helpers decide whether a vest is actually being WORN by
+# checking it against the worker's torso/chest region (not the whole body).
+TORSO_X_INSET = 0.15   # drop 15% of width on each side
+TORSO_Y_TOP   = 0.20   # torso starts 20% down from the top of the worker box
+TORSO_Y_BOT   = 0.65   # torso ends 65% down (chest band, not legs)
+TORSO_NEAR_MARGIN = 0.15  # sides/bottom tolerance only (never above chest top)
+MIN_VEST_IN_WORKER = 0.60  # >=60% of vest area must lie inside the worker box
+
+
+def get_worker_torso_box(worker_box):
+    """Approximate the chest/upper-body region inside a worker box.
+
+    Returns the torso box [x1, y1, x2, y2]:
+        x1 = worker_x1 + 15% width      x2 = worker_x2 - 15% width
+        y1 = worker_y1 + 20% height     y2 = worker_y1 + 65% height
+    """
+    x1, y1, x2, y2 = worker_box
+    w = x2 - x1
+    h = y2 - y1
+    tx1 = x1 + TORSO_X_INSET * w
+    tx2 = x2 - TORSO_X_INSET * w
+    ty1 = y1 + TORSO_Y_TOP * h
+    ty2 = y1 + TORSO_Y_BOT * h
+    return [tx1, ty1, tx2, ty2]
+
+
+def box_center_inside(box, region, margin: float = 0.0) -> bool:
+    """Is the centre of `box` inside `region` (optionally expanded by margin)?"""
+    cx = (box[0] + box[2]) / 2.0
+    cy = (box[1] + box[3]) / 2.0
+    rx1, ry1, rx2, ry2 = region
+    if margin:
+        rw = rx2 - rx1
+        rh = ry2 - ry1
+        rx1 -= rw * margin
+        rx2 += rw * margin
+        ry1 -= rh * margin
+        ry2 += rh * margin
+    return (rx1 <= cx <= rx2) and (ry1 <= cy <= ry2)
+
+
+def vest_matches_worker_torso(
+    vest_box, worker_box, torso_box, overlap_threshold: float = 0.40
+) -> bool:
+    """True only if a vest box is being WORN on a worker's torso.
+
+    Strict rule -- ALL must pass:
+      1. vest centre inside the worker box,
+      2. vest centre inside/near the torso (sides + bottom margin only),
+      3. vest overlaps the torso box by >= `overlap_threshold`,
+      4. vest NOT too high (centre at/below the chest top -> kills face/head),
+      5. vest NOT too low / too side-heavy (centre within the central column),
+      6. >= MIN_VEST_IN_WORKER (60%) of the vest area inside the worker box.
+
+    A vest held in the hand, by the side, low, or up near the face fails one
+    of these gates and is treated as loose (not worn).
+    """
+    tx1, ty1, tx2, ty2 = torso_box
+    vcx = (vest_box[0] + vest_box[2]) / 2.0
+    vcy = (vest_box[1] + vest_box[3]) / 2.0
+
+    # (1) vest centre inside the worker box
+    if not box_center_inside(vest_box, worker_box):
+        return False
+
+    tw = tx2 - tx1
+    th = ty2 - ty1
+    mx = TORSO_NEAR_MARGIN * tw
+    my = TORSO_NEAR_MARGIN * th
+
+    # (4) reject too-high vests (face/head)
+    if vcy < ty1:
+        return False
+    # (5) reject too-low / too-side vests
+    if vcy > ty2 + my:
+        return False
+    if vcx < tx1 - mx or vcx > tx2 + mx:
+        return False
+
+    # (3) overlap with the torso region
+    torso_cover = calculate_overlap_ratio(torso_box, vest_box)  # inter / torso_area
+    vest_inside = calculate_overlap_ratio(vest_box, torso_box)  # inter / vest_area
+    if max(torso_cover, vest_inside) < overlap_threshold:
+        return False
+
+    # (6) vest mostly inside the worker box
+    if calculate_overlap_ratio(vest_box, worker_box) < MIN_VEST_IN_WORKER:
+        return False
+
+    return True
+
+
+def count_workers_without_worn_vest(worker_boxes, vest_boxes, overlap_threshold: float = 0.40) -> int:
+    """How many workers have NO vest worn on their torso?
+
+    Each such worker is a no_vest violation -- including the 'held vest' case
+    where a vest object exists in the frame but is not on the worker's chest.
+    """
+    if not worker_boxes:
+        return 0
+    n = 0
+    for wb in worker_boxes:
+        torso = get_worker_torso_box(wb)
+        worn = any(
+            vest_matches_worker_torso(vb, wb, torso, overlap_threshold)
+            for vb in vest_boxes
+        )
+        if not worn:
+            n += 1
+    return n
+
+
+# ---------------------------------------------------------------------------
 # HUD
 # ---------------------------------------------------------------------------
 def draw_hud(frame, fps, frame_counts, workers_n, violations_saved) -> None:
@@ -745,6 +893,18 @@ def main() -> int:
         f"Clear-after: {args.clear_after:.1f}s   "
         f"Worker-overlap: {args.worker_overlap:.2f}"
     )
+    if args.strict_vest_matching:
+        print(
+            f"[INFO] Vest matching mode -> STRICT torso overlap (experimental, "
+            f"vest-overlap={args.vest_overlap:.2f}); a worker holding a vest "
+            f"(not worn on torso) is treated as no_vest."
+        )
+    else:
+        print(
+            "[INFO] Vest matching mode -> stable [default]: model no_vest "
+            "class gated by worker overlap. (Enable --strict-vest-matching "
+            "for experimental torso-based held-vest detection.)"
+        )
 
     # --- Prep output paths --------------------------------------------------
     SCREENSHOTS_DIR.mkdir(parents=True, exist_ok=True)
@@ -884,6 +1044,16 @@ def main() -> int:
                     frame, person_results[0], args.person_conf
                 )
 
+            # Debug: draw the torso/chest region used for worn-vest matching.
+            if args.show_torso:
+                for wb in worker_boxes:
+                    tb = get_worker_torso_box(wb)
+                    cv2.rectangle(
+                        frame,
+                        (int(tb[0]), int(tb[1])), (int(tb[2]), int(tb[3])),
+                        (200, 200, 200), 1,
+                    )
+
             # ---- Worker <-> PPE matching ----------------------------------
             # Before we let `detect_violations` produce events, decide which
             # no_vest / no_helmet boxes actually belong to a real worker.
@@ -916,6 +1086,29 @@ def main() -> int:
             # Bump cumulative skip counters (for the final summary only).
             unmatched_no_vest_count   += unmatched_nv_this_frame
             unmatched_no_helmet_count += unmatched_nh_this_frame
+
+            # ---- Torso-based worn-vest check (Day 8, OPT-IN) --------------
+            # OFF by default (demo-safe). Only when --strict-vest-matching is
+            # set do we also flag a worker as no_vest when no vest is WORN on
+            # their torso (the 'held vest' case). This torso logic is unstable
+            # on side views / face-area boxes, so it is opt-in. When off, the
+            # script uses ONLY the model's own no_vest class gated by worker
+            # overlap -- the stable Day 6.5 behaviour.
+            if args.strict_vest_matching:
+                vest_boxes = [d["bbox"] for d in ppe_dets if d["class_name"] == "vest"]
+                workers_without_vest = count_workers_without_worn_vest(
+                    worker_boxes, vest_boxes, overlap_threshold=args.vest_overlap
+                )
+                if workers_without_vest > 0:
+                    frame_counts["no_vest"] = max(
+                        frame_counts.get("no_vest", 0), workers_without_vest
+                    )
+                    matched_no_vest = True
+                    # If the model emitted no no_vest box, we have no model
+                    # confidence; record a nominal value so the CSV/HUD don't
+                    # show 0.00 for a real (torso-derived) violation.
+                    if max_confs.get("no_vest", 0.0) <= 0.0:
+                        max_confs["no_vest"] = 0.50
 
             # Lookup: violation_type -> may-save?
             # 'Multiple PPE Missing' requires BOTH classes matched.
