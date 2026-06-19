@@ -80,7 +80,7 @@ DEFAULT_MODEL = (
     / "ai-model"
     / "outputs"
     / "training-runs"
-    / "safevision_yolov8n_5class_v2"
+    / "safevision_yolov8n_5class_v5c_fast"
     / "weights"
     / "best.pt"
 )
@@ -159,6 +159,21 @@ TORSO_NEAR_MARGIN = 0.15
 # the side / mostly outside the body.
 MIN_VEST_IN_WORKER = 0.60
 
+# ---- Head region geometry (for helmet / no_helmet) ------------------------
+# A hard hat sits at the TOP of the worker box, not on the torso. So helmet /
+# no_helmet are matched against the head region (top fraction of the worker
+# box), NOT the torso. This is what was wrongly filtering helmets out before.
+HEAD_REGION_FRAC = 0.35      # head = top 35% of the worker box height
+HEAD_NEAR_MARGIN = 0.25      # allow the helmet centre slightly outside the head box
+
+LOOSE_HELMET_COLOR = (0, 215, 255)   # amber -> helmet on a worker but NOT on head
+
+# ---- Raw helmet debug box colors (--show-helmet-debug-boxes) ---------------
+# These draw the RAW model helmet detections even when they are filtered out,
+# so we can verify whether the model detects head PPE at all.
+RAW_HELMET_COLOR    = (0, 255, 255)   # yellow -> raw helmet box (filtered or not)
+RAW_NO_HELMET_COLOR = (0, 165, 255)   # orange -> raw no_helmet box (filtered or not)
+
 
 # ---------------------------------------------------------------------------
 # CLI
@@ -194,10 +209,21 @@ def parse_args() -> argparse.Namespace:
         type=float,
         default=0.10,
         help=(
-            "In default mode, a PPE box is only shown/counted if at least this "
-            "fraction of it overlaps a worker box (default: 0.10). Kept low "
-            "because PPE boxes are smaller than the worker box. If no worker "
-            "is detected, all PPE counts are 0."
+            "In default mode, a vest/no_vest box is only shown/counted if at "
+            "least this fraction of it overlaps a worker box (default: 0.10). "
+            "Kept low because PPE boxes are smaller than the worker box. If no "
+            "worker is detected, all PPE counts are 0."
+        ),
+    )
+    parser.add_argument(
+        "--helmet-worker-overlap",
+        type=float,
+        default=0.03,
+        help=(
+            "Overlap threshold for helmet/no_helmet vs the worker box "
+            "(default: 0.03, lower than --ppe-worker-overlap because a hard "
+            "hat sits at the top edge and barely overlaps the body). Helmets "
+            "are primarily matched by the worker HEAD region, not the torso."
         ),
     )
     parser.add_argument(
@@ -208,7 +234,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--model",
         default=str(DEFAULT_MODEL),
-        help="Path to SafeVision PPE YOLO weights (default: v2 best.pt)",
+        help="Path to SafeVision PPE YOLO weights (default: v5c_fast best.pt)",
     )
     parser.add_argument(
         "--pose-model",
@@ -251,6 +277,46 @@ def parse_args() -> argparse.Namespace:
         help=(
             "Seconds a no_vest violation must be ABSENT before it can be "
             "counted again as a NEW event (default: 2)."
+        ),
+    )
+    parser.add_argument(
+        "--show-negative-boxes",
+        action="store_true",
+        help=(
+            "Debug only: draw the no_vest / no_helmet boxes (red). Off by "
+            "default so the demo overlay stays clean -- negative status shows "
+            "only in the HUD counts. (Default-mode only.)"
+        ),
+    )
+    parser.add_argument(
+        "--show-helmet-debug-boxes",
+        action="store_true",
+        help=(
+            "Debug only: draw the RAW helmet boxes in yellow (raw_helmet) and "
+            "RAW no_helmet boxes in orange (raw_no_helmet), even when they were "
+            "filtered out. Use with --debug-ppe to verify the model detects "
+            "head PPE at all. (Default-mode only.)"
+        ),
+    )
+    parser.add_argument(
+        "--show-loose-helmets",
+        action="store_true",
+        help=(
+            "If set, draw helmet boxes that are on a worker but NOT on the head "
+            "(e.g. a helmet held in the hand) in amber. These are never counted "
+            "as a worn helmet. Off by default."
+        ),
+    )
+    parser.add_argument(
+        "--debug-ppe",
+        action="store_true",
+        help=(
+            "If set, print RAW PPE detections (before filtering) with class, "
+            "confidence, bbox, the keep/drop verdict and the filter reason "
+            "(no worker / failed worker overlap / failed head-region check / "
+            "loose helmet). Helmet + no_helmet raw boxes are always printed so "
+            "you can see whether the model detects head PPE at all. Throttled "
+            "to ~every 15 frames (every 5 when a helmet appears)."
         ),
     )
     parser.add_argument(
@@ -357,6 +423,50 @@ def filter_ppe_by_workers(dets, worker_boxes, threshold: float = 0.10):
         (box, conf) for (box, conf) in dets
         if ppe_overlaps_any_worker(box, worker_boxes, threshold)
     ]
+
+
+def get_worker_head_box(worker_box):
+    """Head region = the TOP `HEAD_REGION_FRAC` of the worker box.
+
+    A hard hat sits here, not on the torso, so helmet / no_helmet are matched
+    against this region instead of the chest.
+    """
+    x1, y1, x2, y2 = worker_box
+    return (x1, y1, x2, y1 + HEAD_REGION_FRAC * (y2 - y1))
+
+
+def box_on_worker_head(box, worker_box, margin: float = HEAD_NEAR_MARGIN) -> bool:
+    """True if `box`'s centre is inside (or near) this worker's head region."""
+    return box_center_inside(box, get_worker_head_box(worker_box), margin=margin)
+
+
+def box_on_any_worker_head(box, worker_boxes, margin: float = HEAD_NEAR_MARGIN) -> bool:
+    """True if `box`'s centre is in/near ANY worker's head region."""
+    for wb in worker_boxes:
+        if box_on_worker_head(box, wb, margin):
+            return True
+    return False
+
+
+def classify_head_ppe(dets, worker_boxes, overlap_threshold: float = 0.03):
+    """Split helmet / no_helmet detections by where they sit on a worker.
+
+    Returns (on_head, loose, dropped):
+      on_head : centre in/near a worker head region  -> WORN / valid, counted.
+      loose   : overlaps a worker (>= overlap_threshold) but NOT on the head
+                -> e.g. a helmet held in the hand. Displayed only on request,
+                never counted as worn.
+      dropped : touches no worker at all -> ignored.
+    """
+    on_head, loose, dropped = [], [], []
+    for box, conf in dets:
+        if box_on_any_worker_head(box, worker_boxes):
+            on_head.append((box, conf))
+        elif ppe_overlaps_any_worker(box, worker_boxes, overlap_threshold):
+            loose.append((box, conf))
+        else:
+            dropped.append((box, conf))
+    return on_head, loose, dropped
 
 
 def get_worker_torso_box(worker_box):
@@ -658,6 +768,55 @@ def _draw_labeled_box(frame, box, text, color, thickness: int = 2) -> None:
     )
 
 
+def _fmt_box(box) -> str:
+    """Compact 'x1,y1,x2,y2' string for one box (debug printing)."""
+    return f"({box[0]:.0f},{box[1]:.0f},{box[2]:.0f},{box[3]:.0f})"
+
+
+def debug_print_ppe_raw(frame_no, ppe_boxes, worker_boxes, ppe_overlap, helmet_overlap):
+    """Print every RAW PPE detection (before filtering) with its filter verdict.
+
+    For each detection we print class name, confidence, bbox, whether it passed
+    filtering, and -- if not -- WHY it was filtered. helmet / no_helmet raw
+    detections are ALWAYS printed (even when filtered) so we can tell whether
+    the model is detecting head PPE at all.
+
+    Note: detections below --conf never reach this function (the model drops
+    them), so "low confidence" is surfaced by lowering --conf, not here.
+    """
+    n_workers = len(worker_boxes)
+    print(f"[DEBUG-PPE] frame {frame_no}: workers={n_workers}")
+
+    # ---- vest / no_vest : gated purely by worker-box overlap --------------
+    for cname in ("vest", "no_vest"):
+        for box, conf in ppe_boxes.get(cname, []):
+            if n_workers == 0:
+                passed, reason = False, "no worker in frame"
+            elif ppe_overlaps_any_worker(box, worker_boxes, ppe_overlap):
+                passed, reason = True, "counted"
+            else:
+                passed, reason = False, "failed worker overlap"
+            print(f"    {'KEEP' if passed else 'DROP'} {cname:9s} "
+                  f"conf={conf:.2f} bbox={_fmt_box(box)} -> {reason}")
+
+    # ---- helmet / no_helmet : gated by the worker HEAD region -------------
+    for cname in ("helmet", "no_helmet"):
+        for box, conf in ppe_boxes.get(cname, []):
+            if n_workers == 0:
+                passed, reason = False, "no worker in frame"
+            elif box_on_any_worker_head(box, worker_boxes):
+                passed, reason = True, "counted (on head)"
+            elif ppe_overlaps_any_worker(box, worker_boxes, helmet_overlap):
+                passed, reason = (
+                    False,
+                    "failed head-region check (loose helmet: on worker, not on head)",
+                )
+            else:
+                passed, reason = False, "no worker overlap"
+            print(f"    {'KEEP' if passed else 'DROP'} {cname:9s} "
+                  f"conf={conf:.2f} bbox={_fmt_box(box)} -> {reason}")
+
+
 def draw_hud(frame, fps: float, display: dict, workers_n: int) -> None:
     """Draw a compact VERTICAL HUD in the top-left corner.
 
@@ -749,6 +908,7 @@ def main() -> int:
         print(f"[ERROR] Failed to load PPE model: {exc}")
         return 1
     print("[INFO] PPE model loaded.")
+    print(f"[INFO] PPE model path        : {model_path}")
 
     print(f"[INFO] Loading pose model: {args.pose_model}")
     try:
@@ -772,7 +932,15 @@ def main() -> int:
     else:
         print("[INFO] Vest matching mode    : stable (raw PPE objects) [default]")
         print(f"[INFO] PPE-worker overlap    : {args.ppe_worker_overlap:.2f} "
-              f"(PPE shown/counted only on a worker; 0 if no workers)")
+              f"(vest/no_vest; 0 if no workers)")
+        print(f"[INFO] Helmet-worker overlap : {args.helmet_worker_overlap:.2f} "
+              f"(helmet matched by HEAD region, top {int(HEAD_REGION_FRAC*100)}% of worker)")
+        print("[INFO] Negative boxes        : "
+              + ("shown (red boxes, debug)" if args.show_negative_boxes
+                 else "hidden [default, clean overlay]"))
+        print(f"[INFO] Show loose helmets    : {args.show_loose_helmets}")
+        print(f"[INFO] Show helmet dbg boxes : {args.show_helmet_debug_boxes}")
+        print(f"[INFO] Debug PPE             : {args.debug_ppe}")
     print(f"[INFO] Event cooldown (s)    : {args.event_cooldown:.1f}")
     print(f"[INFO] Clear-after (s)       : {args.clear_after:.1f}")
 
@@ -817,6 +985,7 @@ def main() -> int:
     frames_processed = 0
     last_t = time.time()
     fps_smoothed = 0.0
+    last_debug_frame = -999   # throttle for --debug-ppe raw-detection prints
 
     try:
         while True:
@@ -903,33 +1072,82 @@ def main() -> int:
                         if vi not in matched_vest_idx:
                             _draw_labeled_box(frame, vb, "loose vest", LOOSE_VEST_COLOR)
             else:
-                # STABLE DEFAULT (demo-safe): raw PPE boxes, BUT only the ones
-                # that sit on a real worker. A PPE box is drawn + counted only
-                # if it overlaps a worker box by >= --ppe-worker-overlap. With
-                # no workers, nothing passes -> every PPE count is 0. This kills
-                # background bottle/logo/face false detections and the "vest
-                # counted while workers = 0" bug. No torso matching here.
-                ov = args.ppe_worker_overlap
-                vest_keep      = filter_ppe_by_workers(ppe_boxes["vest"],    worker_boxes, ov)
-                no_vest_keep   = filter_ppe_by_workers(ppe_boxes["no_vest"], worker_boxes, ov)
-                helmet_keep    = filter_ppe_by_workers(helmet_dets,          worker_boxes, ov)
-                no_helmet_keep = filter_ppe_by_workers(no_helmet_dets,       worker_boxes, ov)
+                # STABLE DEFAULT (demo-safe). PPE is only kept if it sits on a
+                # real worker; with no workers every PPE count is 0.
+                #   * vest / no_vest -> worker-box overlap (--ppe-worker-overlap)
+                #   * helmet / no_helmet -> worker HEAD region (top of the box),
+                #     NOT the torso, because a hard hat barely overlaps the body
+                #     (this is what was wrongly filtering helmets out before).
+                # A helmet whose centre is NOT on the head (e.g. held in hand) is
+                # "loose": never counted as worn, shown only with --show-loose-helmets.
+                # Clean overlay: only the cyan worker box + positive PPE boxes
+                # (vest / helmet) are drawn. The no_vest / no_helmet boxes are
+                # hidden and there is NO "Missing ..." warning text -- negative
+                # status shows only in the HUD counts (--show-negative-boxes
+                # brings the red boxes back for debugging).
+                ov  = args.ppe_worker_overlap
+                hov = args.helmet_worker_overlap
 
-                for box, conf in helmet_keep:
+                vest_keep    = filter_ppe_by_workers(ppe_boxes["vest"],    worker_boxes, ov)
+                no_vest_keep = filter_ppe_by_workers(ppe_boxes["no_vest"], worker_boxes, ov)
+
+                helmet_worn, helmet_loose, _helmet_dropped = classify_head_ppe(
+                    helmet_dets, worker_boxes, overlap_threshold=hov
+                )
+                no_helmet_head, _nh_loose, _nh_dropped = classify_head_ppe(
+                    no_helmet_dets, worker_boxes, overlap_threshold=hov
+                )
+
+                # Positive PPE -> always drawn normally.
+                for box, conf in helmet_worn:
                     _draw_labeled_box(frame, box, f"helmet {conf:.2f}", HELMET_COLOR)
-                for box, conf in no_helmet_keep:
-                    _draw_labeled_box(frame, box, f"no_helmet {conf:.2f}", NO_HELMET_COLOR)
                 for box, conf in vest_keep:
                     _draw_labeled_box(frame, box, f"vest {conf:.2f}", WORN_VEST_COLOR)
-                for box, conf in no_vest_keep:
-                    _draw_labeled_box(frame, box, f"no_vest {conf:.2f}", NO_VEST_COLOR)
+
+                # Loose helmets (held in hand) -> never counted; amber on request.
+                if args.show_loose_helmets:
+                    for box, conf in helmet_loose:
+                        _draw_labeled_box(frame, box, f"loose helmet {conf:.2f}", LOOSE_HELMET_COLOR)
+
+                # Negative PPE boxes -> hidden by default; drawn only on request.
+                if args.show_negative_boxes:
+                    for box, conf in no_helmet_head:
+                        _draw_labeled_box(frame, box, f"no_helmet {conf:.2f}", NO_HELMET_COLOR)
+                    for box, conf in no_vest_keep:
+                        _draw_labeled_box(frame, box, f"no_vest {conf:.2f}", NO_VEST_COLOR)
+
+                # RAW helmet debug boxes (--show-helmet-debug-boxes): draw EVERY
+                # raw helmet (yellow) / no_helmet (orange) the model produced,
+                # even the ones filtering threw away, to confirm whether the
+                # model detects head PPE at all.
+                if args.show_helmet_debug_boxes:
+                    for box, conf in helmet_dets:
+                        _draw_labeled_box(frame, box, f"raw_helmet {conf:.2f}", RAW_HELMET_COLOR)
+                    for box, conf in no_helmet_dets:
+                        _draw_labeled_box(frame, box, f"raw_no_helmet {conf:.2f}", RAW_NO_HELMET_COLOR)
 
                 vest_worn_n = len(vest_keep)
                 no_vest_n   = len(no_vest_keep)
-                helmet_n    = len(helmet_keep)
-                no_helmet_n = len(no_helmet_keep)
+                helmet_n    = len(helmet_worn)
+                no_helmet_n = len(no_helmet_head)
 
-                # Worker boxes (cyan) from the pose model.
+                # --debug-ppe: print RAW detections (before filtering) with the
+                # filter verdict + reason. Throttled so it doesn't spam: at most
+                # every 15 frames, but as soon as every 5 frames when a
+                # helmet/no_helmet appears (to catch flickery head detections).
+                if args.debug_ppe:
+                    helmet_present = bool(helmet_dets or no_helmet_dets)
+                    gap = frames_processed - last_debug_frame
+                    if gap >= 15 or (helmet_present and gap >= 5):
+                        debug_print_ppe_raw(
+                            frames_processed, ppe_boxes, worker_boxes, ov, hov
+                        )
+                        last_debug_frame = frames_processed
+
+                # Worker boxes (cyan). Clean overlay: NO "Missing Vest" /
+                # "Missing Helmet" warning text. Negative status is reflected
+                # only in the HUD counts (and as red boxes with
+                # --show-negative-boxes).
                 for wb, wconf in workers:
                     _draw_labeled_box(frame, wb, f"worker {wconf:.2f}", WORKER_BOX_COLOR)
 
