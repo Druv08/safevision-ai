@@ -36,7 +36,7 @@ from typing import Any, Optional
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 
 DEFAULT_MODEL_RELATIVE = Path(
-    "ai-model/outputs/training-runs/safevision_yolov8n_5class_v2/weights/best.pt"
+    "ai-model/outputs/training-runs/safevision_yolov8n_5class_v5c_fast/weights/best.pt"
 )
 DEFAULT_MODEL_PATH: Path = PROJECT_ROOT / DEFAULT_MODEL_RELATIVE
 
