@@ -1,164 +1,175 @@
 """
-SafeVision AI - Trained model prediction test (Day 3).
+test_trained_model.py
+---------------------
+Run a quick prediction check using the trained SafeVision YOLOv8n model.
 
-This script loads the trained YOLOv8 weights (best.pt) and runs predictions on
-the first 10 images from the test split. Output images (with drawn boxes) are
-saved to a dedicated folder so we can visually verify the model is working.
-
-It DOES NOT:
-- train the model
-- modify the dataset
-- modify any code outside this script
-
-It ONLY:
-- loads best.pt
-- predicts on 10 test images
-- saves the annotated images
-- prints per-image detections, with MVP classes highlighted
+This script:
+1. Loads the trained weights from the training run.
+2. Uses only the first 10 test images.
+3. Saves annotated prediction images into the predictions folder.
+4. Prints detected classes and confidence scores for each image.
 """
 
-import sys
 from pathlib import Path
 
 
 # --- Paths -------------------------------------------------------------------
 
-# This file:  ai-model/inference/test_trained_model.py
-# Project root = two parents up (folder containing ai-model/).
+# This file lives in ai-model/inference/, so two parents up is the project root.
 SCRIPT_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = SCRIPT_DIR.parent.parent
 
 MODEL_PATH = (
-    PROJECT_ROOT
-    / "ai-model" / "outputs" / "training-runs"
-    / "safevision_yolov8n_v1" / "weights" / "best.pt"
+	PROJECT_ROOT
+	/ "ai-model"
+	/ "outputs"
+	/ "training-runs"
+	/ "safevision_yolov8n_v1"
+	/ "weights"
+	/ "best.pt"
 )
 
 TEST_IMAGES_DIR = (
-    PROJECT_ROOT
-    / "ai-model" / "datasets" / "raw" / "construction-safety-yolo"
-    / "test" / "images"
+	PROJECT_ROOT / "ai-model" / "datasets" / "raw" / "construction-safety-yolo" / "test" / "images"
 )
 
-OUTPUT_PROJECT = PROJECT_ROOT / "ai-model" / "outputs" / "predictions"
-OUTPUT_RUN_NAME = "day3_test_predictions"
+PREDICTIONS_DIR = PROJECT_ROOT / "ai-model" / "outputs" / "predictions"
+PREDICTION_RUN_NAME = "day3_test_predictions"
 
-# Prediction settings
-CONF_THRESHOLD = 0.25
-NUM_TEST_IMAGES = 10
-IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".bmp"}
 
-# The 5 SafeVision MVP classes (names must match data.yaml exactly).
-MVP_CLASS_NAMES = {"Hardhat", "NO-Hardhat", "NO-Safety Vest", "Person", "Safety Vest"}
+# --- Settings ----------------------------------------------------------------
+
+CONFIDENCE_THRESHOLD = 0.25
+MAX_TEST_IMAGES = 10
+
+# MVP classes that should be easy to spot in the console output.
+MVP_CLASSES = {
+	"Hardhat",
+	"NO-Hardhat",
+	"NO-Safety Vest",
+	"Person",
+	"Safety Vest",
+}
+
+
+def collect_test_images(images_dir: Path, limit: int) -> list[Path]:
+	"""Return the first N test images in a stable sorted order."""
+	valid_suffixes = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
+	images = sorted(
+		path for path in images_dir.iterdir() if path.is_file() and path.suffix.lower() in valid_suffixes
+	)
+	return images[:limit]
+
+
+def format_detection(class_name: str, confidence: float, class_id: int | None = None) -> str:
+	"""Format one detection line for beginner-friendly console output."""
+	if class_id is None:
+		return f"{class_name} ({confidence:.3f})"
+	return f"{class_name} [class_id={class_id}] ({confidence:.3f})"
 
 
 def main() -> int:
-    print("=" * 60)
-    print("SafeVision AI - Trained model prediction test")
-    print("=" * 60)
-    print(f"Model path     : {MODEL_PATH}")
-    print(f"Test images dir: {TEST_IMAGES_DIR}")
-    print(f"Output folder  : {OUTPUT_PROJECT / OUTPUT_RUN_NAME}")
-    print(f"Confidence     : {CONF_THRESHOLD}")
-    print("=" * 60)
+	# Import ultralytics only when we are ready to run inference.
+	try:
+		from ultralytics import YOLO
+	except ImportError:
+		print("[ERROR] ultralytics is not installed in the current Python environment.")
+		print("Install it with: pip install ultralytics")
+		return 1
 
-    # Safety checks before doing any heavy work.
-    if not MODEL_PATH.is_file():
-        print(f"\n[ERROR] Trained model not found at:\n  {MODEL_PATH}")
-        return 1
-    if not TEST_IMAGES_DIR.is_dir():
-        print(f"\n[ERROR] Test images folder not found at:\n  {TEST_IMAGES_DIR}")
-        return 1
+	print("=" * 70)
+	print("SafeVision AI - trained model prediction test")
+	print("=" * 70)
+	print(f"Model path          : {MODEL_PATH}")
+	print(f"Test images folder   : {TEST_IMAGES_DIR}")
+	print(f"Prediction output dir: {PREDICTIONS_DIR / PREDICTION_RUN_NAME}")
+	print(f"Confidence threshold : {CONFIDENCE_THRESHOLD}")
+	print(f"Max test images      : {MAX_TEST_IMAGES}")
+	print("MVP classes          : Hardhat, NO-Hardhat, NO-Safety Vest, Person, Safety Vest")
+	print("=" * 70)
 
-    # Pick the first N test images (sorted for repeatability).
-    all_images = sorted(
-        p for p in TEST_IMAGES_DIR.iterdir()
-        if p.is_file() and p.suffix.lower() in IMAGE_EXTS
-    )
-    selected = all_images[:NUM_TEST_IMAGES]
-    if not selected:
-        print("\n[ERROR] No images found in test folder.")
-        return 1
+	# Safety checks before doing any inference work.
+	if not MODEL_PATH.is_file():
+		print(f"\n[ERROR] Trained model not found at:\n  {MODEL_PATH}")
+		return 1
 
-    print(f"\nUsing {len(selected)} test images:")
-    for p in selected:
-        print(f"  - {p.name}")
+	if not TEST_IMAGES_DIR.is_dir():
+		print(f"\n[ERROR] Test images folder not found at:\n  {TEST_IMAGES_DIR}")
+		return 1
 
-    # Import ultralytics here so the path checks above can report errors first.
-    try:
-        from ultralytics import YOLO
-    except ImportError:
-        print("\n[ERROR] ultralytics is not installed. Install with: pip install ultralytics")
-        return 1
+	test_images = collect_test_images(TEST_IMAGES_DIR, MAX_TEST_IMAGES)
+	if not test_images:
+		print(f"\n[ERROR] No test images found in:\n  {TEST_IMAGES_DIR}")
+		return 1
 
-    try:
-        print("\nLoading trained model...")
-        model = YOLO(str(MODEL_PATH))
+	try:
+		print("\nLoading trained model...")
+		model = YOLO(str(MODEL_PATH))
 
-        print("Running predictions...\n")
-        results = model.predict(
-            source=[str(p) for p in selected],
-            conf=CONF_THRESHOLD,
-            save=True,                       # save annotated images
-            project=str(OUTPUT_PROJECT),
-            name=OUTPUT_RUN_NAME,
-            exist_ok=True,                   # overwrite the same folder if re-run
-            verbose=False,
-        )
-    except Exception as exc:
-        print(f"\n[ERROR] Prediction failed: {exc}")
-        return 1
+		print(f"Running prediction on {len(test_images)} image(s)...\n")
+		results = model.predict(
+			source=[str(image_path) for image_path in test_images],
+			conf=CONFIDENCE_THRESHOLD,
+			save=True,
+			project=str(PREDICTIONS_DIR),
+			name=PREDICTION_RUN_NAME,
+			exist_ok=True,
+			verbose=False,
+		)
+	except Exception as exc:
+		print(f"\n[ERROR] Prediction failed: {exc}")
+		return 1
 
-    # Map class id -> class name for nicer printing.
-    id_to_name = model.names  # dict: {0: 'Barricade', 1: 'Dumpster', ...}
+	# Ultralytics exposes the class-name map on the loaded model.
+	class_names = getattr(model, "names", {})
 
-    # --- Per-image detection summary -----------------------------------------
-    print("=" * 60)
-    print("Per-image detections")
-    print("=" * 60)
+	print("\n" + "=" * 70)
+	print("Prediction summary")
+	print("=" * 70)
+	print(f"Model path          : {MODEL_PATH}")
+	print(f"Number of test images: {len(test_images)}")
+	print(f"Output folder        : {PREDICTIONS_DIR / PREDICTION_RUN_NAME}")
+	print("=" * 70)
 
-    overall_mvp_hits: dict[str, int] = {name: 0 for name in MVP_CLASS_NAMES}
+	for result in results:
+		image_path = Path(result.path)
+		print(f"\nImage: {image_path.name}")
 
-    for r in results:
-        img_name = Path(r.path).name
-        if r.boxes is None or len(r.boxes) == 0:
-            print(f"\n[{img_name}] no detections above conf={CONF_THRESHOLD}")
-            continue
+		boxes = getattr(result, "boxes", None)
+		if boxes is None or len(boxes) == 0:
+			print("  Detected: none")
+			continue
 
-        # Each detection has a class id and a confidence.
-        cls_ids = r.boxes.cls.tolist()
-        confs = r.boxes.conf.tolist()
+		detections = []
+		mvp_detections = []
 
-        print(f"\n[{img_name}] {len(cls_ids)} detection(s)")
-        mvp_in_image = []
-        for cid, conf in zip(cls_ids, confs):
-            cid_int = int(cid)
-            name = id_to_name.get(cid_int, f"id{cid_int}")
-            is_mvp = name in MVP_CLASS_NAMES
-            tag = "  [MVP]" if is_mvp else ""
-            print(f"   - {name:18s} conf={conf:.3f}{tag}")
-            if is_mvp:
-                mvp_in_image.append(name)
-                overall_mvp_hits[name] += 1
+		for box in boxes:
+			class_id = int(box.cls.item()) if hasattr(box.cls, "item") else int(box.cls)
+			confidence = float(box.conf.item()) if hasattr(box.conf, "item") else float(box.conf)
+			class_name = class_names.get(class_id, str(class_id))
+			detections.append(format_detection(class_name, confidence, class_id))
 
-        if mvp_in_image:
-            print(f"   MVP classes in this image: {sorted(set(mvp_in_image))}")
+			if class_name in MVP_CLASSES:
+				mvp_detections.append(format_detection(class_name, confidence, class_id))
 
-    # --- Final MVP summary ---------------------------------------------------
-    print("\n" + "=" * 60)
-    print("MVP class totals (across all 10 test images)")
-    print("=" * 60)
-    for name in sorted(MVP_CLASS_NAMES):
-        print(f"  {name:18s} : {overall_mvp_hits[name]} detection(s)")
+		print("  Detected:")
+		for item in detections:
+			print(f"    - {item}")
 
-    out_dir = OUTPUT_PROJECT / OUTPUT_RUN_NAME
-    print("\n" + "=" * 60)
-    print("Done")
-    print("=" * 60)
-    print(f"Annotated images saved to: {out_dir}")
-    print("=" * 60)
-    return 0
+		print("  MVP detections:")
+		if mvp_detections:
+			for item in mvp_detections:
+				print(f"    - {item}")
+		else:
+			print("    - none")
+
+	print("\n" + "=" * 70)
+	print("Prediction test completed successfully.")
+	print("Annotated images were saved with the model's drawn boxes and labels.")
+	print("=" * 70)
+
+	return 0
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+	raise SystemExit(main())

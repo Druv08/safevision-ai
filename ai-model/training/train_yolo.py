@@ -1,22 +1,3 @@
-"""
-SafeVision AI - YOLOv8 training script (Day 3).
-
-This script trains a YOLOv8 model on the Roboflow "Construction Site Safety"
-dataset. It supports two modes:
-
-    python ai-model/training/train_yolo.py          -> normal training (30 epochs)
-    python ai-model/training/train_yolo.py --smoke  -> quick smoke test (3 epochs)
-
-The smoke test is for verifying that the training pipeline works end-to-end
-without spending hours on a full run.
-
-Notes for beginners:
-- ultralytics.YOLO loads a pretrained model (yolov8n.pt = nano = smallest).
-- `.train(...)` runs training and writes everything (weights, plots, csv)
-  into <project>/<name>/.
-- Inside that folder you'll find weights/best.pt and weights/last.pt.
-"""
-
 import argparse
 import sys
 from pathlib import Path

@@ -1,83 +1,69 @@
 """
 main.py
 -------
-SafeVision AI - FastAPI backend entry point.
+SafeVision AI - FastAPI backend starter.
 
 Run from inside the backend/ folder:
-    uvicorn main:app --reload
+
+    python -m uvicorn main:app --reload
 
 Then open:
-    http://127.0.0.1:8000          -> root endpoint
-    http://127.0.0.1:8000/health   -> health + model + storage status
-    http://127.0.0.1:8000/docs     -> interactive Swagger UI
-    http://127.0.0.1:8000/api/...  -> detection endpoints
+
+    http://127.0.0.1:8000
+    http://127.0.0.1:8000/docs
 """
 
 from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 
+# Import detection router
 from routes.detection import router as detection_router
-from services.model_service import get_model_status
 
+# Create FastAPI app
+app = FastAPI(
+    title="SafeVision AI Backend",
+    version="1.0.0"
+)
 
-# ---------------------------------------------------------------------------
-# App + CORS
-# ---------------------------------------------------------------------------
-app = FastAPI(title="SafeVision AI Backend")
-
-# CORS for the local React/Next frontend that will be added on Day 8+.
-# We intentionally keep this narrow (localhost:3000 only) for now.
+# CORS Configuration
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
-        "http://localhost:3000",
-        "http://127.0.0.1:3000",
+        "http://localhost:5173",
     ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Mount the AI detection routes under /api/...
+# Register routes
 app.include_router(detection_router)
 
+# -----------------------------
+# Screenshots Static Folder
+# -----------------------------
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
-# ---------------------------------------------------------------------------
-# Storage locations the backend writes to (declared here so /health can
-# report on them without each route having to know).
-# ---------------------------------------------------------------------------
-BACKEND_DIR = Path(__file__).resolve().parent
-UPLOADS_DIR = BACKEND_DIR / "uploads"
-RESULTS_DIR = BACKEND_DIR / "results"
+SCREENSHOT_DIR = (
+    PROJECT_ROOT
+    / "ai-model"
+    / "outputs"
+    / "violations"
+    / "screenshots"
+)
 
-
-def _storage_status() -> dict:
-    """Report whether the local upload / result folders are usable."""
-    out: dict = {}
-    for label, path in (("uploads", UPLOADS_DIR), ("results", RESULTS_DIR)):
-        try:
-            path.mkdir(parents=True, exist_ok=True)
-            out[label] = {
-                "path": str(path),
-                "writable": True,
-            }
-        except Exception as exc:  # noqa: BLE001
-            out[label] = {
-                "path": str(path),
-                "writable": False,
-                "error": str(exc),
-            }
-    return out
+app.mount(
+    "/screenshots",
+    StaticFiles(directory=str(SCREENSHOT_DIR)),
+    name="screenshots"
+)
 
 
-# ---------------------------------------------------------------------------
-# Root + health
-# ---------------------------------------------------------------------------
 @app.get("/")
-def root() -> dict:
-    """Basic root endpoint to confirm the backend is up."""
+def root():
     return {
         "message": "SafeVision AI backend is running",
         "status": "success",
@@ -85,15 +71,9 @@ def root() -> dict:
 
 
 @app.get("/health")
-def health() -> dict:
-    """Health check: backend, AI model availability, local storage."""
-    model = get_model_status()
+def health():
     return {
         "backend": "active",
-        "model": {
-            "loaded": model["model_loaded"],
-            "path":   model["model_path"],
-            "message": model["message"],
-        },
-        "storage": _storage_status(),
+        "ai_model": "connected",
+        "database": "not connected yet",
     }
