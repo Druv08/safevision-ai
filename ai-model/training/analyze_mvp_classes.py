@@ -1,22 +1,3 @@
-"""
-SafeVision AI - MVP class analysis + confidence-threshold experiment.
-
-What this script does (Day 3 follow-up):
-  1. Reads the dataset's data.yaml to get class names.
-  2. Counts how many object instances exist for the 5 MVP classes
-     in train / valid / test label folders.
-  3. Loads the trained YOLOv8n model (best.pt from v1 run).
-  4. Runs prediction on the first 10 test images at three confidence
-     thresholds (0.25, 0.15, 0.10).
-  5. Saves annotated images to separate folders and prints MVP-class
-     detection counts per threshold.
-
-Safety:
-  - Does NOT train.
-  - Does NOT modify any dataset file.
-  - Output folders are inside ai-model/outputs/ which is gitignored.
-"""
-
 from collections import Counter
 from pathlib import Path
 

@@ -1,190 +1,152 @@
 """
-SafeVision AI - YOLOv8 training script for the merged 5-class dataset.
+train_safevision_5class.py
+--------------------------
+Train YOLOv8n on the processed SafeVision 5-class dataset.
 
-Classes (final):
-    0 = person
-    1 = helmet
-    2 = no_helmet
-    3 = vest
-    4 = no_vest
+Final class order:
+0 = person
+1 = helmet
+2 = no_helmet
+3 = vest
+4 = no_vest
 
-Modes:
-    python ai-model/training/train_safevision_5class.py            # normal (30 epochs)
-    python ai-model/training/train_safevision_5class.py --smoke    # smoke test (1 epoch)
-    python ai-model/training/train_safevision_5class.py --fast     # fast run (10 epochs)
-    python ai-model/training/train_safevision_5class.py --resume   # resume normal run from last.pt
-    python ai-model/training/train_safevision_5class.py --fast --resume   # resume the fast run
-
-Output goes to: ai-model/outputs/training-runs/<run_name>/
-
-Pause/resume:
-    - To pause: press Ctrl+C in the training terminal.
-      YOLO keeps the latest checkpoint at <run_dir>/weights/last.pt
-      after each completed epoch.
-    - To resume: re-run the same mode with --resume.
-      Training continues from last.pt until the original epoch count
-      is reached. Do NOT delete the run folder or last.pt while paused.
+Run modes:
+  python ai-model/training/train_safevision_5class.py --smoke
+  python ai-model/training/train_safevision_5class.py --fast
+  python ai-model/training/train_safevision_5class.py
 """
+
+from __future__ import annotations
 
 import argparse
 import sys
-import time
+import traceback
 from pathlib import Path
 
 
 # --- Paths -------------------------------------------------------------------
 
+# Project root = the folder that contains ai-model/
 SCRIPT_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = SCRIPT_DIR.parent.parent
 
-DATA_YAML = (
-    PROJECT_ROOT
-    / "ai-model" / "datasets" / "processed"
-    / "safevision-ppe-5class" / "data.yaml"
-)
+DATA_YAML = PROJECT_ROOT / "ai-model" / "datasets" / "processed" / "safevision-ppe-5class" / "data.yaml"
 OUTPUT_DIR = PROJECT_ROOT / "ai-model" / "outputs" / "training-runs"
-BASE_MODEL = "yolov8n.pt"  # ultralytics auto-downloads if missing
+BASE_MODEL = "yolov8n.pt"
 
-# Shared training hyperparameters
+
+# --- Training presets --------------------------------------------------------
+
 IMG_SIZE = 640
 BATCH_SIZE = 8
 
-# Per-mode settings
-MODES = {
-    "smoke":  {"epochs": 1,  "name": "safevision_yolov8n_5class_smoke"},
-    "fast":   {"epochs": 10, "name": "safevision_yolov8n_5class_fast"},
-    "normal": {"epochs": 30, "name": "safevision_yolov8n_5class_v2"},
-}
+SMOKE_EPOCHS = 1
+SMOKE_RUN_NAME = "safevision_yolov8n_5class_smoke"
+
+FAST_EPOCHS = 10
+FAST_RUN_NAME = "safevision_yolov8n_5class_fast"
+
+NORMAL_EPOCHS = 30
+NORMAL_RUN_NAME = "safevision_yolov8n_5class_v2"
 
 
 def parse_args() -> argparse.Namespace:
-    """Parse CLI flags. Default = normal mode."""
-    parser = argparse.ArgumentParser(
-        description="Train YOLOv8n on SafeVision 5-class PPE dataset."
-    )
-    group = parser.add_mutually_exclusive_group()
-    group.add_argument(
+    """Parse command-line arguments."""
+    parser = argparse.ArgumentParser(description="Train YOLOv8n on the SafeVision 5-class dataset.")
+    parser.add_argument(
         "--smoke",
         action="store_true",
-        help="Smoke test: 1 epoch, just to verify the pipeline runs.",
-    )
-    group.add_argument(
-        "--fast",
-        action="store_true",
-        help="Fast run: 10 epochs (compromise between smoke and full).",
+        help="Run a 1-epoch smoke test.",
     )
     parser.add_argument(
-        "--resume",
+        "--fast",
         action="store_true",
-        help="Resume the selected mode from its last.pt checkpoint.",
+        help="Run a faster 10-epoch training job.",
     )
     return parser.parse_args()
 
 
-def pick_mode(args: argparse.Namespace) -> str:
+def resolve_mode(args: argparse.Namespace) -> tuple[str, int, str]:
+    """Pick the run mode and training settings from CLI flags."""
     if args.smoke:
-        return "smoke"
+        return "SMOKE", SMOKE_EPOCHS, SMOKE_RUN_NAME
     if args.fast:
-        return "fast"
-    return "normal"
+        return "FAST", FAST_EPOCHS, FAST_RUN_NAME
+    return "NORMAL", NORMAL_EPOCHS, NORMAL_RUN_NAME
+
+
+def print_banner(mode: str, epochs: int, run_name: str) -> None:
+    """Print the selected settings before training starts."""
+    print("=" * 72)
+    print("SafeVision AI - YOLOv8n 5-class training")
+    print("=" * 72)
+    print(f"Dataset path   : {DATA_YAML}")
+    print(f"Training mode  : {mode}")
+    print(f"Epochs         : {epochs}")
+    print(f"Image size     : {IMG_SIZE}")
+    print(f"Batch size     : {BATCH_SIZE}")
+    print(f"Output folder  : {OUTPUT_DIR / run_name}")
+    print("Base model     : yolov8n.pt")
+    print("Warning        : CPU training may take a long time because the dataset has 5987 train images.")
+    print("=" * 72)
 
 
 def main() -> int:
+    """Train the model and print the saved artifact paths."""
     args = parse_args()
-    mode = pick_mode(args)
-    epochs = MODES[mode]["epochs"]
-    run_name = MODES[mode]["name"]
-    run_dir = OUTPUT_DIR / run_name
-    last_pt = run_dir / "weights" / "last.pt"
+    mode, epochs, run_name = resolve_mode(args)
+    fraction = 0.02 if args.smoke else 1.0
 
-    # Resume mode requires a prior last.pt to exist.
-    if args.resume and not last_pt.is_file():
-        print("=" * 70)
-        print("[ERROR] --resume was passed but no checkpoint was found at:")
-        print(f"  {last_pt}")
-        print("Either start a fresh run (drop --resume) or pick the right mode.")
-        print("=" * 70)
-        return 1
+    print_banner(mode, epochs, run_name)
+    if args.smoke:
+        print(f"Smoke fraction: {fraction:.2%} of the processed dataset")
 
-    print("=" * 70)
-    print("SafeVision AI - YOLOv8 training (5-class)")
-    print("=" * 70)
-    print(f"Dataset path   : {DATA_YAML}")
-    print(f"Training mode  : {mode.upper()}{' (RESUME)' if args.resume else ''}")
-    print(f"Epochs (target): {epochs}")
-    print(f"Image size     : {IMG_SIZE}")
-    print(f"Batch size     : {BATCH_SIZE}")
-    print(f"Base model     : {BASE_MODEL if not args.resume else last_pt}")
-    print(f"Output folder  : {run_dir}")
-    print("=" * 70)
-    print("[WARNING] This dataset has ~5,987 training images.")
-    print("[WARNING] CPU training will be SLOW (estimate: ~1-2 min/epoch smoke,")
-    print("          and many hours for the full 30-epoch run on CPU).")
-    print("=" * 70)
-
-    # Safety check: dataset YAML must exist
+    # Make sure the processed dataset YAML exists before importing or training.
     if not DATA_YAML.is_file():
-        print(f"\n[ERROR] data.yaml not found at:\n  {DATA_YAML}")
-        print("Run the dataset builder first:")
-        print("  python ai-model/training/build_safevision_5class_dataset.py")
+        print(f"\n[ERROR] Dataset YAML not found:\n  {DATA_YAML}")
+        print("The trainer expects the processed 5-class dataset to already be built.")
         return 1
 
-    # Import ultralytics lazily so path-check errors still display cleanly
     try:
         from ultralytics import YOLO
     except ImportError:
-        print("\n[ERROR] ultralytics package is not installed.")
-        print("Install it with:  pip install ultralytics")
+        print("\n[ERROR] ultralytics is not installed in the current Python environment.")
         return 1
 
-    # Run training inside try/except so failures surface clearly
-    start = time.time()
     try:
-        if args.resume:
-            print(f"\nResuming from checkpoint: {last_pt}")
-            model = YOLO(str(last_pt))
-            print("Continuing training...\n")
-            # When resume=True, ultralytics re-uses the original training
-            # config stored alongside the run (epochs, imgsz, batch, etc.).
-            model.train(resume=True)
-        else:
-            print("\nLoading base model...")
-            model = YOLO(BASE_MODEL)
+        # Load the small YOLOv8 base model so the 5-class head can be trained.
+        model = YOLO(BASE_MODEL)
 
-            print("Starting training...\n")
-            model.train(
-                data=str(DATA_YAML),
-                epochs=epochs,
-                imgsz=IMG_SIZE,
-                batch=BATCH_SIZE,
-                project=str(OUTPUT_DIR),
-                name=run_name,
-                exist_ok=True,  # overwrite same run name if re-running
-            )
-    except KeyboardInterrupt:
-        print("\n[ABORT] Training interrupted by user.")
-        print(f"        Checkpoint kept at: {last_pt}")
-        print("        Resume later with:")
-        if mode == "normal":
-            print("          python ai-model/training/train_safevision_5class.py --resume")
-        else:
-            print(f"          python ai-model/training/train_safevision_5class.py --{mode} --resume")
-        return 130
+        print("\nStarting training...")
+        results = model.train(
+            data=str(DATA_YAML),
+            epochs=epochs,
+            imgsz=IMG_SIZE,
+            batch=BATCH_SIZE,
+            fraction=fraction,
+            project=str(OUTPUT_DIR),
+            name=run_name,
+            exist_ok=True,
+        )
     except Exception as exc:
         print(f"\n[ERROR] Training failed: {exc}")
+        print(traceback.format_exc())
         return 1
 
-    elapsed = time.time() - start
-    best_pt = run_dir / "weights" / "best.pt"
+    # Ultralytics saves the run folder under project/name.
+    run_dir = OUTPUT_DIR / run_name
+    results_dir = Path(getattr(results, "save_dir", run_dir))
+    best_pt = results_dir / "weights" / "best.pt"
+    last_pt = results_dir / "weights" / "last.pt"
 
-    print("\n" + "=" * 70)
+    print("\n" + "=" * 72)
     print("Training completed")
-    print("=" * 70)
-    print(f"Elapsed time   : {elapsed/60:.2f} minutes ({elapsed:.1f} s)")
-    print(f"Results folder : {run_dir}")
-    print(f"best.pt        : {best_pt}  (exists: {best_pt.is_file()})")
-    print(f"last.pt        : {last_pt}  (exists: {last_pt.is_file()})")
-    print("=" * 70)
+    print("=" * 72)
+    print(f"best.pt path    : {best_pt}")
+    print(f"last.pt path    : {last_pt}")
+    print(f"results folder  : {results_dir}")
+    print("=" * 72)
+
     return 0
 
 
