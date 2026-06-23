@@ -78,7 +78,7 @@ DEFAULT_MODEL = (
     / "ai-model"
     / "outputs"
     / "training-runs"
-    / "safevision_yolov8n_5class_v5c_fast"
+    / "safevision_yolov8n_5class_v5d_50epochs"
     / "weights"
     / "best.pt"
 )
@@ -251,7 +251,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--model",
         default=str(DEFAULT_MODEL),
-        help="Path to SafeVision PPE YOLO weights (default: v5c_fast best.pt)",
+        help="Path to SafeVision PPE YOLO weights (default: v5d_50epochs best.pt)",
     )
     parser.add_argument(
         "--person-model",

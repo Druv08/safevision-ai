@@ -36,28 +36,39 @@ OUTPUT_DIR = PROJECT_ROOT / "ai-model" / "outputs" / "training-runs"
 BASE_MODEL = "yolov8n.pt"
 V3_BEST = OUTPUT_DIR / "safevision_yolov8n_5class_v3" / "weights" / "best.pt"
 V5B_BEST = OUTPUT_DIR / "safevision_yolov8n_5class_v5b" / "weights" / "best.pt"
+# v5d_50epochs is the current best helmet model (false positives fixed, correct
+# tight-hardhat labels). v5e fine-tunes from it to add angle/motion stability.
+V5D_BEST = OUTPUT_DIR / "safevision_yolov8n_5class_v5d_50epochs" / "weights" / "best.pt"
 
 IMG_SIZE = 640
 BATCH_SIZE = 8
 # Run names are suffixed per mode; the dataset tag ("" or "b") is inserted by
 # build_modes() so the balanced (v5b) runs never overwrite the v5 runs.
-EPOCHS = {"smoke": 1, "fast": 10, "normal": 30}
-
-
-def build_modes(balanced: bool, v5c: bool):
-    if v5c:
+def resolve_dataset(balanced: bool, v5c: bool, v5d: bool, v5e: bool = False):
+    """Pick (data.yaml, tag) for the chosen dataset variant."""
+    if v5e:
+        tag, data_dir = "v5e", "safevision-ppe-5class-v5e"
+    elif v5d:
+        tag, data_dir = "v5d", "safevision-ppe-5class-v5d"
+    elif v5c:
         tag, data_dir = "v5c", "safevision-ppe-5class-v5c"
     elif balanced:
         tag, data_dir = "v5b", "safevision-ppe-5class-v5b"
     else:
         tag, data_dir = "v5", "safevision-ppe-5class-v5"
-    data_yaml = PROCESSED / data_dir / "data.yaml"
-    modes = {
-        "smoke":  {"epochs": 1,  "name": f"safevision_yolov8n_5class_{tag}_smoke"},
-        "fast":   {"epochs": 10, "name": f"safevision_yolov8n_5class_{tag}_fast"},
-        "normal": {"epochs": 30, "name": f"safevision_yolov8n_5class_{tag}"},
-    }
-    return data_yaml, modes
+    return PROCESSED / data_dir / "data.yaml", tag
+
+
+def resolve_epochs_and_name(args, tag):
+    """Decide epoch count + run-folder name. Priority: smoke > fast > --epochs > normal."""
+    base = f"safevision_yolov8n_5class_{tag}"
+    if args.smoke:
+        return 1, f"{base}_smoke"
+    if args.fast:
+        return 10, f"{base}_fast"
+    if args.epochs:
+        return args.epochs, f"{base}_{args.epochs}epochs"
+    return 30, base
 
 
 def parse_args():
@@ -71,6 +82,11 @@ def parse_args():
                    help="Fine-tune from the v5b best.pt (recommended for v5c: "
                         "v5b already learned the webcam helmet setup, v5c is a "
                         "surgical hard-negative correction on top).")
+    p.add_argument("--from-v5d", action="store_true",
+                   help="Fine-tune from the v5d_50epochs best.pt (recommended "
+                        "for v5e: v5d already fixed the false positives and has "
+                        "correct tight-hardhat labels; v5e adds angle/motion "
+                        "stability on top).")
     p.add_argument("--balanced", action="store_true",
                    help="Train on the balanced v5b dataset (v3 + webcam, no "
                         "construction flood, no_helmet oversampled). Writes to "
@@ -78,12 +94,17 @@ def parse_args():
     p.add_argument("--v5c", action="store_true",
                    help="Train on the v5c dataset (v5b recipe + headphones / "
                         "held-helmet hard negatives). Writes to *_v5c folders.")
+    p.add_argument("--v5d", action="store_true",
+                   help="Train on the v5d dataset (v3 + corrected tight-hardhat "
+                        "webcam labels). Writes to *_v5d run folders.")
+    p.add_argument("--v5e", action="store_true",
+                   help="Train on the v5e dataset (v5d + helmet-worn angle / "
+                        "motion stability frames). Writes to *_v5e run folders.")
+    p.add_argument("--epochs", type=int, default=None,
+                   help="Custom epoch count (e.g. 50). Run folder is "
+                        "named *_<N>epochs. Ignored if --smoke/--fast is set.")
     p.add_argument("--resume", action="store_true", help="Resume from last.pt.")
     return p.parse_args()
-
-
-def pick_mode(a):
-    return "smoke" if a.smoke else ("fast" if a.fast else "normal")
 
 
 def pick_device():
@@ -98,15 +119,19 @@ def pick_device():
 
 def main():
     args = parse_args()
-    mode = pick_mode(args)
-    DATA_YAML, MODES = build_modes(args.balanced, args.v5c)
-    epochs = MODES[mode]["epochs"]
-    run_name = MODES[mode]["name"]
+    DATA_YAML, tag = resolve_dataset(args.balanced, args.v5c, args.v5d, args.v5e)
+    epochs, run_name = resolve_epochs_and_name(args, tag)
+    mode = "smoke" if args.smoke else ("fast" if args.fast else "custom")
     run_dir = OUTPUT_DIR / run_name
     last_pt = run_dir / "weights" / "last.pt"
     device = pick_device()
 
-    if args.from_v5b:
+    if args.from_v5d:
+        if not V5D_BEST.is_file():
+            print(f"[ERROR] --from-v5d set but v5d weights not found:\n  {V5D_BEST}")
+            return 1
+        base_model = str(V5D_BEST)
+    elif args.from_v5b:
         if not V5B_BEST.is_file():
             print(f"[ERROR] --from-v5b set but v5b weights not found:\n  {V5B_BEST}")
             return 1
@@ -162,9 +187,8 @@ def main():
                 name=run_name, exist_ok=True,
             )
     except KeyboardInterrupt:
-        print("\n[ABORT] Interrupted. Resume with:")
-        flag = "" if mode == "normal" else f"--{mode} "
-        print(f"  python ai-model/training/train_safevision_v5.py {flag}--resume")
+        print("\n[ABORT] Interrupted. Resume with the SAME flags plus --resume, e.g.:")
+        print("  python ai-model/training/train_safevision_v5.py <your-flags> --resume")
         return 130
     except Exception as exc:
         print(f"\n[ERROR] Training failed: {exc}")
