@@ -8,7 +8,7 @@ MODEL_PATH = (
     / "ai-model"
     / "outputs"
     / "training-runs"
-    / "safevision_yolov8n_5class_v5c_fast"
+    / "safevision_yolov8n_5class_v5d_50epochs"
     / "weights"
     / "best.pt"
 )
