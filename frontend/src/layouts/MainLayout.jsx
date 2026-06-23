@@ -1,9 +1,26 @@
+import { useContext } from "react";
+
 import Sidebar from "../components/Sidebar";
 import Navbar from "../components/Navbar";
 
-function MainLayout({ children }) {
+import {
+  ThemeContext
+} from "../context/ThemeContext";
+
+function MainLayout({
+  children
+}) {
+  const { darkMode } =
+    useContext(ThemeContext);
+
   return (
-    <div className="flex">
+    <div
+      className={`flex min-h-screen transition-all duration-300 ${
+        darkMode
+          ? "bg-slate-900 text-white"
+          : "bg-gray-100 text-black"
+      }`}
+    >
       <Sidebar />
 
       <div className="flex-1">

@@ -41,7 +41,7 @@ def save_violation(
     violation_id = str(uuid.uuid4())[:8]
 
     screenshot_name = (
-        f"{timestamp}_{violation_type.replace(' ','_')}.jpg"
+        f"{timestamp}_{violation_id}_{violation_type.replace(' ','_')}.jpg"
     )
 
     screenshot_path = (

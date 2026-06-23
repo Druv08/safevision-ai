@@ -3,9 +3,13 @@ import shutil
 from collections import Counter
 
 from fastapi import APIRouter, UploadFile, File
+from fastapi.responses import FileResponse
 
 from services.detection_service import detect_image
-from services.violations_service import get_violations
+from services.violations_service import (
+    get_violations,
+    CSV_PATH
+)
 from services.video_detection_service import detect_video
 
 router = APIRouter()
@@ -17,11 +21,18 @@ UPLOAD_DIR.mkdir(exist_ok=True)
 # -----------------------------
 # IMAGE DETECTION
 # -----------------------------
+import uuid
+
+# -----------------------------
+# IMAGE DETECTION
+# -----------------------------
 @router.post("/detect-image")
 async def detect_image_route(
     image: UploadFile = File(...)
 ):
-    file_path = UPLOAD_DIR / image.filename
+    path_obj = Path(image.filename)
+    unique_filename = f"{path_obj.stem}_{uuid.uuid4().hex[:8]}{path_obj.suffix}"
+    file_path = UPLOAD_DIR / unique_filename
 
     with open(file_path, "wb") as buffer:
         shutil.copyfileobj(image.file, buffer)
@@ -41,7 +52,9 @@ async def detect_image_route(
 async def detect_video_route(
     video: UploadFile = File(...)
 ):
-    file_path = UPLOAD_DIR / video.filename
+    path_obj = Path(video.filename)
+    unique_filename = f"{path_obj.stem}_{uuid.uuid4().hex[:8]}{path_obj.suffix}"
+    file_path = UPLOAD_DIR / unique_filename
 
     with open(file_path, "wb") as buffer:
         shutil.copyfileobj(video.file, buffer)
@@ -63,6 +76,19 @@ def get_violations_route():
         "count": len(violations),
         "violations": violations
     }
+
+
+# -----------------------------
+# DOWNLOAD CSV
+# -----------------------------
+@router.get("/download-violations")
+def download_violations():
+
+    return FileResponse(
+        path=str(CSV_PATH),
+        filename="violations_log.csv",
+        media_type="text/csv"
+    )
 
 
 # -----------------------------

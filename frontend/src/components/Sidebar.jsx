@@ -1,69 +1,149 @@
-import { Link } from "react-router-dom";
+import { NavLink, Link } from "react-router-dom";
+import { useContext } from "react";
+
 import {
   FaHome,
   FaImage,
   FaVideo,
   FaExclamationTriangle,
   FaInfoCircle,
+  FaShieldAlt,
+  FaMoon,
+  FaSun
 } from "react-icons/fa";
 
+import {
+  ThemeContext
+} from "../context/ThemeContext";
 function Sidebar() {
-  return (
-    <div className="w-64 bg-slate-900 text-white h-screen p-5">
-      <h2 className="text-3xl font-bold mb-10">
-        SafeVision AI
-      </h2>
+  const {
+    darkMode,
+    setDarkMode
+  } = useContext(
+    ThemeContext
+  );
 
-      <ul className="space-y-5">
+  const navClass = ({
+    isActive
+  }) =>
+    `flex items-center gap-3 px-4 py-2.5 rounded-xl transition-all ${
+      isActive
+        ? "bg-blue-600 text-white"
+        : darkMode
+        ? "text-gray-300 hover:bg-slate-800"
+        : "text-gray-700 hover:bg-gray-200"
+    }`;
+
+  return (
+    <div
+      className={`w-60 h-screen sticky top-0 p-5 border-r transition-all ${
+        darkMode
+          ? "bg-slate-950 text-white border-slate-800"
+          : "bg-white text-black border-gray-200"
+      }`}
+    >
+      <div className="mb-10">
+
+        <Link to="/" className="flex items-center gap-3 hover:opacity-80 transition-all">
+
+          <div className="bg-blue-600 p-2.5 rounded-xl text-white">
+            <FaShieldAlt />
+          </div>
+
+          <div>
+            <h1 className="text-xl font-semibold text-black dark:text-white">
+              SafeVision AI
+            </h1>
+
+            <p
+              className={`text-xs ${
+                darkMode
+                  ? "text-gray-400"
+                  : "text-gray-500"
+              }`}
+            >
+              PPE Monitoring
+            </p>
+          </div>
+
+        </Link>
+
+      </div>
+
+      <button
+        onClick={() =>
+          setDarkMode(
+            !darkMode
+          )
+        }
+        className="w-full mb-6 bg-blue-600 text-white py-2 rounded-lg flex items-center justify-center gap-2"
+      >
+        {darkMode ? (
+          <>
+            <FaSun />
+            Light Mode
+          </>
+        ) : (
+          <>
+            <FaMoon />
+            Dark Mode
+          </>
+        )}
+      </button>
+
+      <ul className="space-y-2">
+
         <li>
-          <Link
-            to="/"
-            className="flex items-center gap-3 hover:text-blue-400"
+          <NavLink
+            to="/dashboard"
+            end
+            className={navClass}
           >
             <FaHome />
             Dashboard
-          </Link>
+          </NavLink>
         </li>
 
         <li>
-          <Link
+          <NavLink
             to="/image-detection"
-            className="flex items-center gap-3 hover:text-blue-400"
+            className={navClass}
           >
             <FaImage />
             Image Detection
-          </Link>
+          </NavLink>
         </li>
 
         <li>
-          <Link
+          <NavLink
             to="/video-detection"
-            className="flex items-center gap-3 hover:text-blue-400"
+            className={navClass}
           >
             <FaVideo />
             Video Detection
-          </Link>
+          </NavLink>
         </li>
 
         <li>
-          <Link
+          <NavLink
             to="/violations"
-            className="flex items-center gap-3 hover:text-blue-400"
+            className={navClass}
           >
             <FaExclamationTriangle />
             Violations
-          </Link>
+          </NavLink>
         </li>
 
         <li>
-          <Link
+          <NavLink
             to="/about"
-            className="flex items-center gap-3 hover:text-blue-400"
+            className={navClass}
           >
             <FaInfoCircle />
             About
-          </Link>
+          </NavLink>
         </li>
+
       </ul>
     </div>
   );

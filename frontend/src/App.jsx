@@ -1,4 +1,5 @@
 import { Routes, Route } from "react-router-dom";
+import Landing from "./pages/Landing";
 
 import MainLayout from "./layouts/MainLayout";
 
@@ -10,31 +11,52 @@ import About from "./pages/About";
 
 function App() {
   return (
-    <MainLayout>
-      <Routes>
-        <Route path="/" element={<Dashboard />} />
+    <Routes>
+      {/* Landing Page without Layout */}
+      <Route path="/" element={<Landing />} />
 
-        <Route
-          path="/image-detection"
-          element={<ImageDetection />}
-        />
-
-        <Route
-          path="/video-detection"
-          element={<VideoDetection />}
-        />
-
-        <Route
-          path="/violations"
-          element={<Violations />}
-        />
-
-        <Route
-          path="/about"
-          element={<About />}
-        />
-      </Routes>
-    </MainLayout>
+      {/* Dashboard Routes with Layout */}
+      <Route
+        path="/dashboard"
+        element={
+          <MainLayout>
+            <Dashboard />
+          </MainLayout>
+        }
+      />
+      <Route
+        path="/image-detection"
+        element={
+          <MainLayout>
+            <ImageDetection />
+          </MainLayout>
+        }
+      />
+      <Route
+        path="/video-detection"
+        element={
+          <MainLayout>
+            <VideoDetection />
+          </MainLayout>
+        }
+      />
+      <Route
+        path="/violations"
+        element={
+          <MainLayout>
+            <Violations />
+          </MainLayout>
+        }
+      />
+      <Route
+        path="/about"
+        element={
+          <MainLayout>
+            <About />
+          </MainLayout>
+        }
+      />
+    </Routes>
   );
 }
 
