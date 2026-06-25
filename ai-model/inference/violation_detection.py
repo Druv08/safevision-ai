@@ -73,15 +73,14 @@ from ultralytics import YOLO
 # ---------------------------------------------------------------------------
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
-DEFAULT_MODEL = (
-    PROJECT_ROOT
-    / "ai-model"
-    / "outputs"
-    / "training-runs"
-    / "safevision_yolov8n_5class_v5d_50epochs"
-    / "weights"
-    / "best.pt"
-)
+MODEL_CANDIDATES = [
+    PROJECT_ROOT / "ai-model" / "outputs" / "training-runs" / "safevision_yolov8n_5class_v5d_50epochs" / "weights" / "best.pt",
+    PROJECT_ROOT / "ai-model" / "outputs" / "training-runs" / "safevision_yolov8n_5class_v2" / "weights" / "best.pt",
+    PROJECT_ROOT / "ai-model" / "outputs" / "training-runs" / "safevision_yolov8n_5class_smoke" / "weights" / "best.pt",
+    PROJECT_ROOT / "yolov8n.pt",
+]
+
+DEFAULT_MODEL = next((c for c in MODEL_CANDIDATES if c.exists()), MODEL_CANDIDATES[0])
 
 # Where we drop violation evidence
 VIOLATIONS_DIR  = PROJECT_ROOT / "ai-model" / "outputs" / "violations"

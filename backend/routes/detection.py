@@ -37,11 +37,12 @@ async def detect_image_route(
     with open(file_path, "wb") as buffer:
         shutil.copyfileobj(image.file, buffer)
 
-    detections = detect_image(str(file_path))
+    detections, summary = detect_image(str(file_path))
 
     return {
         "filename": image.filename,
-        "detections": detections
+        "detections": detections,
+        "summary": summary
     }
 
 
