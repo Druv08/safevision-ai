@@ -1,3 +1,56 @@
 @import "tailwindcss";
 
 @custom-variant dark (&:where(.dark, .dark *));
+
+/* ── Aurora blobs ─────────────────────────────────────── */
+.aurora-blob {
+  position: absolute;
+  border-radius: 50%;
+  filter: blur(100px);
+  opacity: 0.18;
+  pointer-events: none;
+}
+
+/* ── Shimmer gradient text ────────────────────────────── */
+.shimmer-text {
+  background: linear-gradient(90deg, #60a5fa 0%, #34d399 30%, #a78bfa 65%, #60a5fa 100%);
+  background-size: 300% auto;
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+  animation: shimmer 4s linear infinite;
+}
+
+/* ── Keyframes ────────────────────────────────────────── */
+@keyframes shimmer {
+  0%   { background-position: 0% center; }
+  100% { background-position: 300% center; }
+}
+
+@keyframes aurora-1 {
+  0%,  100% { transform: translate(0px,   0px)   scale(1);    }
+  25%        { transform: translate(60px,  -80px) scale(1.1);  }
+  50%        { transform: translate(-40px,  40px) scale(0.95); }
+  75%        { transform: translate(20px,  -25px) scale(1.05); }
+}
+
+@keyframes aurora-2 {
+  0%,  100% { transform: translate(0px,   0px)   scale(1);    }
+  33%        { transform: translate(-70px,  50px) scale(1.08); }
+  66%        { transform: translate(35px,  -55px) scale(0.92); }
+}
+
+@keyframes aurora-3 {
+  0%,  100% { transform: translate(0px,  0px)  scale(1);    }
+  50%        { transform: translate(40px, 55px) scale(1.12); }
+}
+
+@keyframes cursor-blink {
+  0%,  100% { opacity: 1; }
+  50%        { opacity: 0; }
+}
+
+@keyframes float-card {
+  0%,  100% { transform: translateY(0px);  }
+  50%        { transform: translateY(-10px); }
+}

@@ -1,39 +1,23 @@
 import { useState, useRef, useEffect } from "react";
 import API from "../services/api";
+import { FaCamera, FaUpload, FaStop, FaSearch, FaCheckCircle, FaExclamationTriangle } from "react-icons/fa";
+
+const CLASS_NAMES = { 0: "Person", 1: "Helmet", 2: "No Helmet", 3: "Vest", 4: "No Vest" };
 
 function ImageDetection() {
   const [file, setFile] = useState(null);
   const [preview, setPreview] = useState(null);
   const [result, setResult] = useState(null);
   const [loading, setLoading] = useState(false);
-
-  const classNames = {
-    0: "Person",
-    1: "Helmet",
-    2: "No Helmet",
-    3: "Vest",
-    4: "No Vest",
-  };
+  const [useWebcam, setUseWebcam] = useState(false);
+  const [stream, setStream] = useState(null);
 
   const videoRef = useRef(null);
   const canvasRef = useRef(null);
   const autoDetectRef = useRef(null);
-  const [useWebcam, setUseWebcam] = useState(false);
-  const [stream, setStream] = useState(null);
 
-  useEffect(() => {
-    return () => {
-      if (stream) {
-        stream.getTracks().forEach((track) => track.stop());
-      }
-    };
-  }, [stream]);
-
-  useEffect(() => {
-    if (useWebcam && videoRef.current && stream) {
-      videoRef.current.srcObject = stream;
-    }
-  }, [useWebcam, stream]);
+  useEffect(() => () => { if (stream) stream.getTracks().forEach((t) => t.stop()); }, [stream]);
+  useEffect(() => { if (useWebcam && videoRef.current && stream) videoRef.current.srcObject = stream; }, [useWebcam, stream]);
 
   const startWebcam = async () => {
     try {
@@ -42,219 +26,181 @@ function ImageDetection() {
       setUseWebcam(true);
       setFile(null);
       setPreview(null);
-      
       const detectFrame = () => {
         if (!videoRef.current || !canvasRef.current) return;
         const video = videoRef.current;
+        if (video.videoWidth === 0) return;
         const canvas = canvasRef.current;
-        if (video.videoWidth === 0) return; 
-
         canvas.width = video.videoWidth;
         canvas.height = video.videoHeight;
-        const ctx = canvas.getContext('2d');
-        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-        
+        canvas.getContext("2d").drawImage(video, 0, 0);
         canvas.toBlob(async (blob) => {
-          const capturedFile = new File([blob], "cctv-frame.jpg", { type: "image/jpeg" });
           const formData = new FormData();
-          formData.append("image", capturedFile);
-          try {
-            setLoading(true);
-            const response = await API.post("/detect-image", formData);
-            setResult(response.data);
-          } catch (error) {
-            console.error(error);
-          } finally {
-            setLoading(false);
-          }
+          formData.append("image", new File([blob], "frame.jpg", { type: "image/jpeg" }));
+          try { setLoading(true); const r = await API.post("/detect-image", formData); setResult(r.data); }
+          catch (e) { console.error(e); }
+          finally { setLoading(false); }
         }, "image/jpeg");
       };
-
-      const loop = setInterval(detectFrame, 3000);
-      autoDetectRef.current = loop;
-
+      autoDetectRef.current = setInterval(detectFrame, 3000);
     } catch (err) {
-      alert("Error accessing webcam: " + err.message);
+      alert("Webcam error: " + err.message);
     }
   };
 
   const stopWebcam = () => {
-    if (autoDetectRef.current) clearInterval(autoDetectRef.current);
-    if (stream) {
-      stream.getTracks().forEach(track => track.stop());
-      setStream(null);
-    }
+    clearInterval(autoDetectRef.current);
+    stream?.getTracks().forEach((t) => t.stop());
+    setStream(null);
     setUseWebcam(false);
   };
 
-  const handleImageChange = (e) => {
-    const selected = e.target.files[0];
-
-    if (selected) {
-      setFile(selected);
-      setPreview(URL.createObjectURL(selected));
-      setResult(null);
-    }
+  const handleFileChange = (e) => {
+    const f = e.target.files[0];
+    if (f) { setFile(f); setPreview(URL.createObjectURL(f)); setResult(null); }
   };
 
   const handleDetect = async () => {
-    if (!file) {
-      alert("Please select an image first.");
-      return;
-    }
-
+    if (!file) return alert("Please select an image first.");
     try {
       setLoading(true);
-
-      const formData = new FormData();
-      formData.append("image", file);
-
-      const response = await API.post(
-        "/detect-image",
-        formData,
-        {
-          headers: {
-            "Content-Type": "multipart/form-data",
-          },
-        }
-      );
-
-      setResult(response.data);
-    } catch (error) {
-      console.error("Detection Error:", error);
-
-      if (error.response) {
-        alert(JSON.stringify(error.response.data));
-      } else {
-        alert("Detection failed.");
-      }
+      const form = new FormData();
+      form.append("image", file);
+      const r = await API.post("/detect-image", form, { headers: { "Content-Type": "multipart/form-data" } });
+      setResult(r.data);
+    } catch (e) {
+      console.error(e);
+      alert(e.response ? JSON.stringify(e.response.data) : "Detection failed.");
     } finally {
       setLoading(false);
     }
   };
 
-  const hasViolation =
-    result?.detections?.some(
-      (item) =>
-        item.class_id === 2 || // No Helmet
-        item.class_id === 4 // No Vest
-    ) || false;
+  const hasViolation = result?.detections?.some((d) => d.class_id === 2 || d.class_id === 4) ?? false;
 
   return (
-    <div>
-      <h1 className="text-3xl font-bold mb-6">
-        Image Detection
-      </h1>
+    <div className="space-y-6 max-w-5xl">
 
-      <div className="bg-white dark:bg-slate-800 p-6 rounded-xl shadow">
-        <div className="flex flex-col xl:flex-row gap-4 mb-6">
-          <div className="flex-1 flex flex-col gap-3">
-             <label className="font-semibold dark:text-white">Upload File</label>
-             <input
-               type="file"
-               accept="image/*"
-               onChange={handleImageChange}
-               className="
-                 block w-full text-sm
-                 text-gray-900 dark:text-white
-                 file:mr-4 file:py-2 file:px-4
-                 file:rounded-lg file:border-0
-                 file:text-sm file:font-semibold
-                 file:bg-blue-600 file:text-white
-                 hover:file:bg-blue-700
-                 cursor-pointer
-               "
-             />
+      {/* Upload / Webcam Panel */}
+      <div className="bg-white/[0.03] backdrop-blur-sm border border-white/[0.08] rounded-2xl p-6">
+        <div className="grid md:grid-cols-2 gap-6 mb-6">
+
+          {/* File upload */}
+          <div>
+            <p className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-3">Upload Image</p>
+            <label className="flex flex-col items-center justify-center w-full h-36 border-2 border-dashed border-white/10 rounded-xl cursor-pointer hover:border-blue-500/40 hover:bg-blue-500/[0.03] transition-all group">
+              <FaUpload className="text-2xl text-slate-500 group-hover:text-blue-400 mb-2 transition-colors" />
+              <span className="text-sm text-slate-400 group-hover:text-slate-300 transition-colors">
+                {file ? file.name : "Click to choose an image"}
+              </span>
+              <span className="text-xs text-slate-600 mt-1">PNG, JPG, JPEG</span>
+              <input type="file" accept="image/*" onChange={handleFileChange} className="hidden" />
+            </label>
           </div>
 
-          <div className="flex items-center justify-center">
-            <span className="font-bold text-gray-400 dark:text-gray-500">OR</span>
-          </div>
-
-          <div className="flex-1 flex flex-col gap-3">
-             <label className="font-semibold dark:text-white">Use CCTV / Webcam</label>
-             <button
-               onClick={useWebcam ? stopWebcam : startWebcam}
-               className="bg-gray-800 text-white px-4 py-2 rounded-lg hover:bg-gray-900 dark:bg-slate-700 dark:hover:bg-slate-600 transition w-full sm:w-auto self-start"
-             >
-               {useWebcam ? "Close Webcam" : "Open Webcam"}
-             </button>
-          </div>
-          
-          <div className="flex-none flex items-end">
+          {/* Webcam */}
+          <div>
+            <p className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-3">Live CCTV / Webcam</p>
             <button
-              onClick={handleDetect}
-              disabled={loading || !file}
-              className="bg-blue-600 text-white px-8 py-2 rounded-lg hover:bg-blue-700 w-full xl:w-auto h-10 disabled:opacity-50"
+              onClick={useWebcam ? stopWebcam : startWebcam}
+              className={`w-full h-36 rounded-xl border-2 border-dashed flex flex-col items-center justify-center gap-2 transition-all font-medium text-sm ${
+                useWebcam
+                  ? "border-red-500/40 bg-red-500/[0.05] text-red-400 hover:bg-red-500/10"
+                  : "border-white/10 text-slate-400 hover:border-emerald-500/40 hover:bg-emerald-500/[0.03] hover:text-emerald-400"
+              }`}
             >
-              {loading ? "Detecting..." : "Detect PPE"}
+              {useWebcam
+                ? <><FaStop className="text-xl" /> Stop Webcam</>
+                : <><FaCamera className="text-xl" /> Open Webcam</>
+              }
             </button>
           </div>
         </div>
 
-        {useWebcam && (
-          <div className="mb-6 bg-gray-100 dark:bg-slate-700 p-4 rounded-xl flex flex-col items-center shadow-inner">
-            <h3 className="font-semibold text-lg mb-3 dark:text-white flex items-center gap-2">
-              <span className="w-3 h-3 rounded-full bg-red-500 animate-pulse"></span>
-              Live CCTV Feed Processing
-            </h3>
-            <video ref={videoRef} autoPlay playsInline className="w-full max-w-2xl rounded-lg shadow-md bg-black border-2 border-gray-300 dark:border-slate-600" />
-            <canvas ref={canvasRef} style={{ display: 'none' }} />
-          </div>
-        )}
-
-        {preview && (
-          <div className="mt-6">
-            <h2 className="font-semibold mb-2">
-              Image Preview
-            </h2>
-
-            <img
-              src={preview}
-              alt="preview"
-              className="max-w-md rounded-lg border"
-            />
-          </div>
-        )}
-
-        {result && (
-          <div className="mt-6 p-5 bg-gray-100 dark:bg-slate-700 rounded-lg border border-gray-200 dark:border-slate-600">
-            <h2 className="font-bold text-xl mb-4 text-gray-800 dark:text-white">
-              Detection Results
-            </h2>
-
-            {result.detections.length === 0 ? (
-              <p className="text-gray-700 dark:text-gray-200">No objects detected.</p>
-            ) : (
-              <>
-                <ul className="space-y-2 text-gray-700 dark:text-gray-200 mb-4">
-                  {result.detections.map((item, index) => (
-                    <li
-                      key={index}
-                      className="text-lg"
-                    >
-                      <strong>
-                        {classNames[item.class_id]}
-                      </strong>{" "}
-                      ({(item.confidence * 100).toFixed(1)}%)
-                    </li>
-                  ))}
-                </ul>
-
-                <div
-                  className={`mt-4 p-4 rounded-lg font-bold border ${
-                    hasViolation
-                      ? "bg-red-100 dark:bg-red-950/40 text-red-700 dark:text-red-300 border-red-200 dark:border-red-900/50"
-                      : "bg-green-100 dark:bg-green-950/40 text-green-700 dark:text-green-300 border-green-200 dark:border-green-900/50"
-                  }`}
-                >
-                  {hasViolation ? "⚠️ VIOLATION DETECTED" : "✅ SAFE"}
-                </div>
-              </>
-            )}
-          </div>
-        )}
+        {/* Detect button */}
+        <button
+          onClick={handleDetect}
+          disabled={loading || !file}
+          className="flex items-center gap-2 bg-blue-600 hover:bg-blue-500 disabled:opacity-40 disabled:cursor-not-allowed text-white px-6 py-2.5 rounded-xl font-semibold text-sm transition-colors shadow-[0_0_20px_rgba(37,99,235,0.3)]"
+        >
+          <FaSearch />
+          {loading ? "Detecting…" : "Detect PPE"}
+        </button>
       </div>
+
+      {/* Webcam Feed */}
+      {useWebcam && (
+        <div className="bg-white/[0.03] border border-white/[0.08] rounded-2xl p-6">
+          <div className="flex items-center gap-2 mb-4">
+            <span className="w-2.5 h-2.5 rounded-full bg-red-500 animate-pulse" />
+            <h3 className="font-semibold text-white">Live CCTV Feed</h3>
+            {loading && <span className="text-xs text-blue-400 ml-auto animate-pulse">Analyzing…</span>}
+          </div>
+          <video ref={videoRef} autoPlay playsInline className="w-full rounded-xl bg-black border border-white/[0.06]" />
+          <canvas ref={canvasRef} className="hidden" />
+        </div>
+      )}
+
+      {/* Image Preview */}
+      {preview && (
+        <div className="bg-white/[0.03] border border-white/[0.08] rounded-2xl p-6">
+          <p className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-4">Preview</p>
+          <img src={preview} alt="Preview" className="max-w-md rounded-xl border border-white/[0.08]" />
+        </div>
+      )}
+
+      {/* Results */}
+      {result && (
+        <div className="bg-white/[0.03] border border-white/[0.08] rounded-2xl p-6 space-y-6">
+          <h2 className="text-lg font-bold text-white">Detection Results</h2>
+
+          {/* Summary cards */}
+          {result.summary && (
+            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
+              {[
+                { label: "Total Persons", val: result.summary.total_persons, c: "text-blue-400",    b: "border-blue-500/20",    bg: "bg-blue-500/10"    },
+                { label: "Helmet Worn",   val: result.summary.helmet_worn,   c: "text-emerald-400", b: "border-emerald-500/20", bg: "bg-emerald-500/10" },
+                { label: "No Helmet",     val: result.summary.no_helmet,     c: "text-red-400",     b: "border-red-500/20",     bg: "bg-red-500/10"     },
+                { label: "Vest Worn",     val: result.summary.vest_worn,     c: "text-emerald-400", b: "border-emerald-500/20", bg: "bg-emerald-500/10" },
+                { label: "No Vest",       val: result.summary.no_vest,       c: "text-red-400",     b: "border-red-500/20",     bg: "bg-red-500/10"     },
+              ].map((s) => (
+                <div key={s.label} className={`${s.bg} border ${s.b} rounded-xl p-3 text-center`}>
+                  <div className={`text-2xl font-black ${s.c}`}>{s.val}</div>
+                  <div className="text-[11px] text-slate-400 mt-1">{s.label}</div>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* Raw detections */}
+          {result.detections.length > 0 && (
+            <div>
+              <p className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-3">Raw Detections</p>
+              <div className="flex flex-wrap gap-2">
+                {result.detections.map((d, i) => (
+                  <span key={i} className={`px-3 py-1.5 rounded-lg text-sm font-medium border ${
+                    d.class_id === 2 || d.class_id === 4
+                      ? "bg-red-500/10 border-red-500/20 text-red-300"
+                      : "bg-emerald-500/10 border-emerald-500/20 text-emerald-300"
+                  }`}>
+                    {CLASS_NAMES[d.class_id]} — {(d.confidence * 100).toFixed(1)}%
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Verdict */}
+          <div className={`flex items-center gap-3 p-4 rounded-xl border font-bold ${
+            hasViolation
+              ? "bg-red-500/10 border-red-500/30 text-red-300"
+              : "bg-emerald-500/10 border-emerald-500/30 text-emerald-300"
+          }`}>
+            {hasViolation ? <FaExclamationTriangle className="text-xl" /> : <FaCheckCircle className="text-xl" />}
+            {hasViolation ? "VIOLATION DETECTED" : "ALL SAFE"}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

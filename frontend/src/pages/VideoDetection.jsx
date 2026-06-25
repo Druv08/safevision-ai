@@ -1,30 +1,20 @@
 import { useState, useRef, useEffect } from "react";
 import API from "../services/api";
+import { FaCamera, FaUpload, FaStop, FaPlay, FaExclamationTriangle, FaCheckCircle, FaFilm } from "react-icons/fa";
 
 function VideoDetection() {
   const [video, setVideo] = useState(null);
   const [videoName, setVideoName] = useState("");
   const [result, setResult] = useState(null);
   const [loading, setLoading] = useState(false);
-
   const [useWebcam, setUseWebcam] = useState(false);
   const [stream, setStream] = useState(null);
-  const autoRecorderRef = useRef(null);
+
   const videoRef = useRef(null);
+  const autoRecorderRef = useRef(null);
 
-  useEffect(() => {
-    return () => {
-      if (stream) {
-        stream.getTracks().forEach((track) => track.stop());
-      }
-    };
-  }, [stream]);
-
-  useEffect(() => {
-    if (useWebcam && videoRef.current && stream) {
-      videoRef.current.srcObject = stream;
-    }
-  }, [useWebcam, stream]);
+  useEffect(() => () => { if (stream) stream.getTracks().forEach((t) => t.stop()); }, [stream]);
+  useEffect(() => { if (useWebcam && videoRef.current && stream) videoRef.current.srcObject = stream; }, [useWebcam, stream]);
 
   const startWebcam = async () => {
     try {
@@ -36,203 +26,162 @@ function VideoDetection() {
       setResult(null);
 
       const recordAndSend = () => {
-        const mediaRecorder = new MediaRecorder(mediaStream, { mimeType: 'video/webm' });
+        const recorder = new MediaRecorder(mediaStream, { mimeType: "video/webm" });
         const chunks = [];
-        mediaRecorder.ondataavailable = (e) => {
-          if (e.data.size > 0) chunks.push(e.data);
-        };
-        mediaRecorder.onstop = async () => {
-          if (chunks.length === 0) return;
-          const blob = new Blob(chunks, { type: 'video/webm' });
-          const file = new File([blob], "cctv-chunk.webm", { type: "video/webm" });
+        recorder.ondataavailable = (e) => { if (e.data.size > 0) chunks.push(e.data); };
+        recorder.onstop = async () => {
+          if (!chunks.length) return;
+          const blob = new Blob(chunks, { type: "video/webm" });
           try {
             setLoading(true);
-            const formData = new FormData();
-            formData.append("video", file);
-            const res = await API.post("/detect-video", formData);
+            const form = new FormData();
+            form.append("video", new File([blob], "chunk.webm", { type: "video/webm" }));
+            const res = await API.post("/detect-video", form);
             setResult(res.data);
-          } catch(e) {
-            console.error(e);
-          } finally {
-            setLoading(false);
-          }
+          } catch (e) { console.error(e); }
+          finally { setLoading(false); }
         };
-        mediaRecorder.start();
-        setTimeout(() => {
-          if (mediaRecorder.state === "recording") mediaRecorder.stop();
-        }, 5000);
+        recorder.start();
+        setTimeout(() => { if (recorder.state === "recording") recorder.stop(); }, 5000);
       };
 
       recordAndSend();
-      const loop = setInterval(recordAndSend, 5500);
-      autoRecorderRef.current = loop;
-
+      autoRecorderRef.current = setInterval(recordAndSend, 5500);
     } catch (err) {
-      alert("Error accessing webcam: " + err.message);
+      alert("Webcam error: " + err.message);
     }
   };
 
   const stopWebcam = () => {
-    if (autoRecorderRef.current) clearInterval(autoRecorderRef.current);
-    if (stream) {
-      stream.getTracks().forEach(track => track.stop());
-      setStream(null);
-    }
+    clearInterval(autoRecorderRef.current);
+    stream?.getTracks().forEach((t) => t.stop());
+    setStream(null);
     setUseWebcam(false);
   };
 
-  const handleVideoChange = (e) => {
-    const selected = e.target.files[0];
-
-    if (selected) {
-      setVideo(selected);
-      setVideoName(selected.name);
-      setResult(null);
-    }
+  const handleFileChange = (e) => {
+    const f = e.target.files[0];
+    if (f) { setVideo(f); setVideoName(f.name); setResult(null); }
   };
 
   const handleDetect = async () => {
-    if (!video) {
-      alert("Please select a video first.");
-      return;
-    }
-
+    if (!video) return alert("Please select a video first.");
     try {
       setLoading(true);
-
-      const formData = new FormData();
-      formData.append("video", video);
-
-      const response = await API.post(
-        "/detect-video",
-        formData,
-        {
-          headers: {
-            "Content-Type": "multipart/form-data",
-          },
-        }
-      );
-
-      setResult(response.data);
-    } catch (error) {
-      console.error(error);
-
-      if (error.response) {
-        alert(JSON.stringify(error.response.data));
-      } else {
-        alert("Video detection failed.");
-      }
+      const form = new FormData();
+      form.append("video", video);
+      const r = await API.post("/detect-video", form, { headers: { "Content-Type": "multipart/form-data" } });
+      setResult(r.data);
+    } catch (e) {
+      console.error(e);
+      alert(e.response ? JSON.stringify(e.response.data) : "Video detection failed.");
     } finally {
       setLoading(false);
     }
   };
 
   return (
-    <div>
-      <h1 className="text-3xl font-bold mb-6">
-        Video Detection
-      </h1>
+    <div className="space-y-6 max-w-5xl">
 
-      <div className="bg-white dark:bg-slate-800 p-6 rounded-xl shadow">
-        <div className="flex flex-col xl:flex-row gap-4 mb-6">
-          <div className="flex-1 flex flex-col gap-3">
-             <label className="font-semibold dark:text-white">Upload File</label>
-             <input
-               type="file"
-               accept="video/*"
-               onChange={handleVideoChange}
-               className="
-                 block w-full text-sm
-                 text-gray-900 dark:text-white
-                 file:mr-4 file:py-2 file:px-4
-                 file:rounded-lg file:border-0
-                 file:text-sm file:font-semibold
-                 file:bg-blue-600 file:text-white
-                 hover:file:bg-blue-700
-                 cursor-pointer
-               "
-             />
+      {/* Upload / Webcam Panel */}
+      <div className="bg-white/[0.03] backdrop-blur-sm border border-white/[0.08] rounded-2xl p-6">
+        <div className="grid md:grid-cols-2 gap-6 mb-6">
+
+          {/* File upload */}
+          <div>
+            <p className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-3">Upload Video</p>
+            <label className="flex flex-col items-center justify-center w-full h-36 border-2 border-dashed border-white/10 rounded-xl cursor-pointer hover:border-blue-500/40 hover:bg-blue-500/[0.03] transition-all group">
+              <FaUpload className="text-2xl text-slate-500 group-hover:text-blue-400 mb-2 transition-colors" />
+              <span className="text-sm text-slate-400 group-hover:text-slate-300 transition-colors text-center px-4 truncate max-w-full">
+                {videoName || "Click to choose a video"}
+              </span>
+              <span className="text-xs text-slate-600 mt-1">MP4, AVI, MOV, WEBM</span>
+              <input type="file" accept="video/*" onChange={handleFileChange} className="hidden" />
+            </label>
           </div>
 
-          <div className="flex items-center justify-center">
-            <span className="font-bold text-gray-400 dark:text-gray-500">OR</span>
-          </div>
-
-          <div className="flex-1 flex flex-col gap-3">
-             <label className="font-semibold dark:text-white">Use CCTV / Webcam</label>
-             <button
-               onClick={useWebcam ? stopWebcam : startWebcam}
-               className="bg-gray-800 text-white px-4 py-2 rounded-lg hover:bg-gray-900 dark:bg-slate-700 dark:hover:bg-slate-600 transition w-full sm:w-auto self-start"
-             >
-               {useWebcam ? "Close Webcam" : "Open Webcam"}
-             </button>
-          </div>
-          
-          <div className="flex-none flex items-end">
+          {/* Webcam */}
+          <div>
+            <p className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-3">Live CCTV / Webcam</p>
             <button
-              onClick={handleDetect}
-              disabled={loading || !video}
-              className="bg-blue-600 text-white px-8 py-2 rounded-lg hover:bg-blue-700 w-full xl:w-auto h-10 disabled:opacity-50"
+              onClick={useWebcam ? stopWebcam : startWebcam}
+              className={`w-full h-36 rounded-xl border-2 border-dashed flex flex-col items-center justify-center gap-2 transition-all font-medium text-sm ${
+                useWebcam
+                  ? "border-red-500/40 bg-red-500/[0.05] text-red-400 hover:bg-red-500/10"
+                  : "border-white/10 text-slate-400 hover:border-emerald-500/40 hover:bg-emerald-500/[0.03] hover:text-emerald-400"
+              }`}
             >
-              {loading ? "Processing..." : "Detect PPE"}
+              {useWebcam
+                ? <><FaStop className="text-xl" /> Stop Webcam</>
+                : <><FaCamera className="text-xl" /> Open Webcam</>
+              }
             </button>
           </div>
         </div>
 
-        {useWebcam && (
-          <div className="mb-6 bg-gray-100 dark:bg-slate-700 p-4 rounded-xl flex flex-col items-center shadow-inner">
-            <h3 className="font-semibold text-lg mb-3 dark:text-white flex items-center gap-2">
-              <span className="w-3 h-3 rounded-full bg-red-500 animate-pulse"></span>
-              Live CCTV Video Processing
-            </h3>
-            <video ref={videoRef} autoPlay playsInline muted className="w-full max-w-2xl rounded-lg shadow-md bg-black border-2 border-gray-300 dark:border-slate-600" />
-            <p className="text-gray-500 dark:text-gray-300 font-semibold mt-4 animate-pulse">Analyzing video stream in real-time...</p>
-          </div>
-        )}
-
-        {videoName && (
-          <div className="mt-4">
-            <strong>Selected Video:</strong> {videoName}
-          </div>
-        )}
-
-        {result && (
-          <div className="mt-6 p-5 bg-gray-100 dark:bg-slate-700 rounded-lg border border-gray-200 dark:border-slate-600">
-            <h2 className="text-xl font-bold mb-4 text-gray-800 dark:text-white">
-              Video Analysis Results
-            </h2>
-
-            <div className="space-y-3 text-gray-700 dark:text-gray-200">
-              <p>
-                <strong>Filename:</strong>{" "}
-                {result.filename}
-              </p>
-
-              <p>
-                <strong>Status:</strong>{" "}
-                <span className="text-green-600 dark:text-green-400 font-semibold">
-                  {result.status}
-                </span>
-              </p>
-
-              <p>
-                <strong>Total Violations:</strong>{" "}
-                {result.total_violations}
-              </p>
-
-              <p>
-                <strong>Helmet Violations:</strong>{" "}
-                {result.helmet_violations}
-              </p>
-
-              <p>
-                <strong>Vest Violations:</strong>{" "}
-                {result.vest_violations}
-              </p>
-            </div>
-          </div>
-        )}
+        <button
+          onClick={handleDetect}
+          disabled={loading || !video}
+          className="flex items-center gap-2 bg-blue-600 hover:bg-blue-500 disabled:opacity-40 disabled:cursor-not-allowed text-white px-6 py-2.5 rounded-xl font-semibold text-sm transition-colors shadow-[0_0_20px_rgba(37,99,235,0.3)]"
+        >
+          <FaPlay />
+          {loading ? "Processing…" : "Detect PPE"}
+        </button>
       </div>
+
+      {/* Webcam Feed */}
+      {useWebcam && (
+        <div className="bg-white/[0.03] border border-white/[0.08] rounded-2xl p-6">
+          <div className="flex items-center gap-2 mb-4">
+            <span className="w-2.5 h-2.5 rounded-full bg-red-500 animate-pulse" />
+            <h3 className="font-semibold text-white">Live CCTV Video Feed</h3>
+            {loading && <span className="text-xs text-blue-400 ml-auto animate-pulse">Analyzing stream…</span>}
+          </div>
+          <video ref={videoRef} autoPlay playsInline muted className="w-full rounded-xl bg-black border border-white/[0.06]" />
+        </div>
+      )}
+
+      {/* Selected file info */}
+      {videoName && !useWebcam && (
+        <div className="flex items-center gap-3 bg-white/[0.03] border border-white/[0.08] rounded-xl px-5 py-4">
+          <FaFilm className="text-blue-400 text-xl flex-shrink-0" />
+          <div>
+            <p className="text-xs text-slate-500 font-medium">Selected Video</p>
+            <p className="text-sm text-white font-medium">{videoName}</p>
+          </div>
+        </div>
+      )}
+
+      {/* Results */}
+      {result && (
+        <div className="bg-white/[0.03] border border-white/[0.08] rounded-2xl p-6 space-y-5">
+          <h2 className="text-lg font-bold text-white">Video Analysis Results</h2>
+
+          <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">
+            {[
+              { label: "Status",            val: result.status,            c: "text-emerald-400", b: "border-emerald-500/20", bg: "bg-emerald-500/10" },
+              { label: "Total Violations",  val: result.total_violations,  c: "text-red-400",     b: "border-red-500/20",     bg: "bg-red-500/10"     },
+              { label: "Helmet Violations", val: result.helmet_violations, c: "text-orange-400",  b: "border-orange-500/20",  bg: "bg-orange-500/10"  },
+              { label: "Vest Violations",   val: result.vest_violations,   c: "text-yellow-400",  b: "border-yellow-500/20",  bg: "bg-yellow-500/10"  },
+              { label: "Filename",          val: result.filename,          c: "text-slate-300",   b: "border-white/[0.08]",   bg: "bg-white/[0.03]"   },
+            ].map((s) => (
+              <div key={s.label} className={`${s.bg} border ${s.b} rounded-xl p-4`}>
+                <p className="text-[11px] text-slate-400 font-medium uppercase tracking-wider mb-1">{s.label}</p>
+                <p className={`text-lg font-bold ${s.c} truncate`}>{s.val}</p>
+              </div>
+            ))}
+          </div>
+
+          <div className={`flex items-center gap-3 p-4 rounded-xl border font-bold ${
+            result.total_violations > 0
+              ? "bg-red-500/10 border-red-500/30 text-red-300"
+              : "bg-emerald-500/10 border-emerald-500/30 text-emerald-300"
+          }`}>
+            {result.total_violations > 0 ? <FaExclamationTriangle className="text-xl" /> : <FaCheckCircle className="text-xl" />}
+            {result.total_violations > 0 ? `${result.total_violations} VIOLATION(S) DETECTED` : "NO VIOLATIONS FOUND"}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
