@@ -10,13 +10,16 @@ const PAGE_NAMES = {
 
 function Navbar() {
   const { pathname } = useLocation();
-  const title = PAGE_NAMES[pathname] || "SafeVision AI";
+  const title = PAGE_NAMES[pathname] || "SafeVisionAI";
 
   return (
-    <div className="bg-slate-950/70 backdrop-blur-xl border-b border-white/[0.06] px-6 py-4 flex items-center justify-between flex-shrink-0">
-      <h1 className="text-xl font-bold text-white">{title}</h1>
-      <div className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 text-xs font-semibold">
-        <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
+    <div className="sv-chrome sv-bd-b px-6 py-4 flex items-center justify-between flex-shrink-0">
+      <h1 className="sv-fg text-xl font-extrabold tracking-[-0.01em]">{title}</h1>
+      <div className="tone-ok sv-tone sv-tone-ink sv-mono flex items-center gap-2 px-3 py-1.5 rounded-full text-[10px] font-bold uppercase tracking-[0.14em]">
+        <span
+          className="sv-tone-dot w-1.5 h-1.5 rounded-full"
+          style={{ animation: "sv-blink 1.6s ease-in-out infinite" }}
+        />
         System Online
       </div>
     </div>

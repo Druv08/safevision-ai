@@ -2,12 +2,7 @@ import { useEffect, useState, useRef } from "react";
 import { useLocation, Link } from "react-router-dom";
 import API from "../services/api";
 import { FaDownload, FaArrowLeft, FaExclamationTriangle } from "react-icons/fa";
-
-const SEVERITY_STYLES = {
-  Critical: "bg-purple-500/20 text-purple-300 border border-purple-500/30",
-  High:     "bg-red-500/20    text-red-300    border border-red-500/30",
-  Medium:   "bg-yellow-500/20 text-yellow-300 border border-yellow-500/30",
-};
+import { SEVERITY_STYLES } from "../theme";
 
 function Violations() {
   const [violations, setViolations] = useState([]);
@@ -58,48 +53,59 @@ function Violations() {
       {/* Header */}
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
         <div>
-          <Link to="/dashboard" className="inline-flex items-center gap-2 text-slate-400 hover:text-white text-sm font-medium transition-colors mb-3">
+          <Link
+            to="/dashboard"
+            className="sv-linkish inline-flex items-center gap-2 text-sm font-medium mb-3"
+          >
             <FaArrowLeft className="text-xs" /> Back to Dashboard
           </Link>
           <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-xl bg-red-500/10 border border-red-500/20 flex items-center justify-center text-red-400">
+            <div className="tone-alert sv-tone sv-tone-ink w-10 h-10 rounded-xl flex items-center justify-center">
               <FaExclamationTriangle />
             </div>
             <div>
-              <h1 className="text-xl font-bold text-white">Violations Monitor</h1>
-              <p className="text-xs text-slate-400">{violations.length} total records</p>
+              <h1 className="sv-fg text-xl font-extrabold">Violations Monitor</h1>
+              <p className="sv-mono sv-fg-muted text-[10px] font-bold uppercase tracking-[0.14em] mt-1">
+                {violations.length} total records
+              </p>
             </div>
           </div>
         </div>
 
         <button
           onClick={downloadCSV}
-          className="flex items-center gap-2 bg-emerald-600/20 hover:bg-emerald-600/30 border border-emerald-500/30 text-emerald-400 px-5 py-2.5 rounded-xl font-semibold text-sm transition-all"
+          className="sv-gold-btn flex items-center gap-2 text-[var(--sv-on-accent)] px-5 py-2.5 rounded-xl font-bold text-sm transition-shadow duration-300"
         >
           <FaDownload /> Export CSV
         </button>
       </div>
 
       {/* Table */}
-      <div className="bg-white/[0.03] backdrop-blur-sm border border-white/[0.08] rounded-2xl overflow-hidden">
+      <div className="sv-panel rounded-2xl overflow-hidden">
 
         {loading ? (
-          <div className="flex items-center justify-center py-16 text-slate-500">
-            <span className="w-2 h-2 rounded-full bg-blue-400 animate-ping mr-3" />
+          <div className="sv-fg-muted flex items-center justify-center py-16 text-sm">
+            <span
+              className="sv-ink-gold w-2 h-2 rounded-full bg-current mr-3"
+              style={{ animation: "sv-blink 1.2s ease-in-out infinite" }}
+            />
             Loading violations…
           </div>
         ) : violations.length === 0 ? (
-          <div className="text-center py-16 text-slate-500">
-            <FaExclamationTriangle className="text-3xl mx-auto mb-3 opacity-30" />
+          <div className="sv-fg-faint text-center py-16 text-sm">
+            <FaExclamationTriangle className="text-3xl mx-auto mb-3 opacity-40" />
             No violations recorded yet.
           </div>
         ) : (
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead>
-                <tr className="border-b border-white/[0.06] bg-white/[0.02]">
+                <tr className="sv-bd-b sv-panel-sub">
                   {["ID", "Violation Type", "Severity", "Confidence", "Screenshot", "Timestamp"].map((h) => (
-                    <th key={h} className="text-left px-5 py-4 text-xs font-semibold text-slate-400 uppercase tracking-wider whitespace-nowrap">
+                    <th
+                      key={h}
+                      className="sv-mono sv-fg-muted text-left px-5 py-4 text-[9.5px] font-bold uppercase tracking-[0.14em] whitespace-nowrap"
+                    >
                       {h}
                     </th>
                   ))}
@@ -112,33 +118,29 @@ function Violations() {
                     <tr
                       key={item.violation_id}
                       ref={(el) => (rowRefs.current[item.violation_id] = el)}
-                      className={`border-b border-white/[0.04] transition-all duration-500 ${
-                        isHl
-                          ? "bg-yellow-500/10 border-yellow-500/20"
-                          : "hover:bg-white/[0.02]"
-                      }`}
+                      className={`sv-row transition-all duration-500 ${isHl ? "sv-row-highlight" : ""}`}
                     >
-                      <td className="px-5 py-4 text-slate-500 text-xs font-mono">{item.violation_id}</td>
-                      <td className="px-5 py-4 text-slate-300 font-medium whitespace-nowrap">{item.violation_type}</td>
+                      <td className="sv-mono sv-fg-faint px-5 py-4 text-[11px]">{item.violation_id}</td>
+                      <td className="sv-fg px-5 py-4 font-medium whitespace-nowrap">{item.violation_type}</td>
                       <td className="px-5 py-4">
                         <span className={`px-2.5 py-1 rounded-lg text-xs font-semibold ${SEVERITY_STYLES[item.severity] || SEVERITY_STYLES.Medium}`}>
                           {item.severity}
                         </span>
                       </td>
-                      <td className="px-5 py-4 text-slate-300">{(parseFloat(item.confidence) * 100).toFixed(1)}%</td>
+                      <td className="sv-fg px-5 py-4 tabular-nums">{(parseFloat(item.confidence) * 100).toFixed(1)}%</td>
                       <td className="px-5 py-4">
                         {item.screenshot_path ? (
                           <img
                             src={getImageUrl(item.screenshot_path)}
                             alt="violation"
-                            className="w-20 h-14 object-cover rounded-lg border border-white/[0.08] cursor-pointer hover:scale-110 hover:shadow-xl transition-transform"
+                            className="sv-bd w-20 h-14 object-cover rounded-lg border cursor-pointer hover:scale-110 transition-transform"
                             onClick={() => setSelectedImage(getImageUrl(item.screenshot_path))}
                           />
                         ) : (
-                          <span className="text-slate-600 text-xs">No image</span>
+                          <span className="sv-fg-faint text-xs">No image</span>
                         )}
                       </td>
-                      <td className="px-5 py-4 text-slate-400 text-xs whitespace-nowrap">{item.timestamp}</td>
+                      <td className="sv-mono sv-fg-dim px-5 py-4 text-[11px] whitespace-nowrap">{item.timestamp}</td>
                     </tr>
                   );
                 })}
@@ -151,15 +153,17 @@ function Violations() {
       {/* Lightbox */}
       {selectedImage && (
         <div
-          className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center z-50 p-4"
+          className="sv-lightbox fixed inset-0 flex items-center justify-center z-50 p-4"
           onClick={() => setSelectedImage(null)}
         >
           <img
             src={selectedImage}
             alt="Violation"
-            className="max-w-[90vw] max-h-[85vh] rounded-2xl shadow-2xl border border-white/10"
+            className="sv-bd max-w-[90vw] max-h-[85vh] rounded-2xl shadow-2xl border"
           />
-          <p className="absolute bottom-6 text-slate-400 text-sm">Click anywhere to close</p>
+          <p className="sv-mono sv-fg-dim absolute bottom-6 text-[11px] uppercase tracking-[0.14em]">
+            Click anywhere to close
+          </p>
         </div>
       )}
     </div>

@@ -1,93 +1,56 @@
 import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import {
-  FaShieldAlt, FaArrowRight, FaChartBar, FaBolt, FaCheckCircle,
-  FaCloud, FaHardHat, FaUserShield, FaBell, FaVideo, FaChartPie,
-  FaCloudUploadAlt, FaMicrochip, FaExclamationTriangle, FaFileExport,
+  FaShieldAlt, FaArrowRight, FaBolt, FaCloud, FaBullseye,
+  FaHardHat, FaVideo, FaChartPie, FaBell, FaCloudUploadAlt, FaMicrochip,
+  FaExclamationTriangle, FaFileExport, FaCheck,
 } from "react-icons/fa";
-import heroImage from "../assets/hero_construction.png";
 
-/* ── Particle Canvas ─────────────────────────────────────────── */
-function ParticleCanvas() {
-  const canvasRef = useRef(null);
+import { GOLD, OK, ALERT } from "../theme";
+
+/* ── Reveal-on-scroll ────────────────────────────────────────── */
+function useReveal() {
   useEffect(() => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-    const ctx = canvas.getContext("2d");
-    let animId;
-    const mouse = { x: -999, y: -999 };
-
-    const resize = () => {
-      canvas.width = window.innerWidth;
-      canvas.height = window.innerHeight;
-    };
-    resize();
-
-    const N = 60;
-    const pts = Array.from({ length: N }, () => ({
-      x: Math.random() * canvas.width,
-      y: Math.random() * canvas.height,
-      vx: (Math.random() - 0.5) * 0.35,
-      vy: (Math.random() - 0.5) * 0.35,
-      r: Math.random() * 1.5 + 0.5,
-    }));
-
-    const onMouse = (e) => { mouse.x = e.clientX; mouse.y = e.clientY; };
-    window.addEventListener("mousemove", onMouse);
-    window.addEventListener("resize", resize);
-
-    const draw = () => {
-      ctx.clearRect(0, 0, canvas.width, canvas.height);
-      pts.forEach((p) => {
-        const dx = mouse.x - p.x;
-        const dy = mouse.y - p.y;
-        const d = Math.hypot(dx, dy);
-        if (d < 160 && d > 0) {
-          p.vx += (dx / d) * 0.015;
-          p.vy += (dy / d) * 0.015;
-        }
-        const spd = Math.hypot(p.vx, p.vy);
-        if (spd > 1.2) { p.vx *= 0.95; p.vy *= 0.95; }
-        p.x += p.vx;
-        p.y += p.vy;
-        if (p.x < 0) p.x = canvas.width;
-        if (p.x > canvas.width) p.x = 0;
-        if (p.y < 0) p.y = canvas.height;
-        if (p.y > canvas.height) p.y = 0;
-        ctx.beginPath();
-        ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2);
-        ctx.fillStyle = "rgba(96,165,250,0.5)";
-        ctx.fill();
-      });
-      for (let i = 0; i < N; i++) {
-        for (let j = i + 1; j < N; j++) {
-          const dx = pts[i].x - pts[j].x;
-          const dy = pts[i].y - pts[j].y;
-          const d = Math.hypot(dx, dy);
-          if (d < 120) {
-            ctx.beginPath();
-            ctx.moveTo(pts[i].x, pts[i].y);
-            ctx.lineTo(pts[j].x, pts[j].y);
-            ctx.strokeStyle = `rgba(96,165,250,${0.12 * (1 - d / 120)})`;
-            ctx.lineWidth = 0.5;
-            ctx.stroke();
+    const els = document.querySelectorAll(".sv-reveal");
+    const obs = new IntersectionObserver(
+      (entries) => {
+        entries.forEach((en) => {
+          if (en.isIntersecting) {
+            en.target.classList.add("sv-in");
+            obs.unobserve(en.target);
           }
-        }
-      }
-      animId = requestAnimationFrame(draw);
-    };
-    draw();
-
-    return () => {
-      cancelAnimationFrame(animId);
-      window.removeEventListener("mousemove", onMouse);
-      window.removeEventListener("resize", resize);
-    };
+        });
+      },
+      { threshold: 0.12, rootMargin: "0px 0px -60px 0px" }
+    );
+    els.forEach((el) => obs.observe(el));
+    return () => obs.disconnect();
   }, []);
-  return <canvas ref={canvasRef} className="fixed inset-0 z-0 pointer-events-none opacity-60" />;
 }
 
-/* ── Scroll Progress Bar ─────────────────────────────────────── */
+/* Fires once when the element scrolls into view. */
+function useInView(threshold = 0.35) {
+  const ref = useRef(null);
+  const [seen, setSeen] = useState(false);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const obs = new IntersectionObserver(
+      ([e]) => {
+        if (e.isIntersecting) {
+          setSeen(true);
+          obs.disconnect();
+        }
+      },
+      { threshold }
+    );
+    obs.observe(el);
+    return () => obs.disconnect();
+  }, [threshold]);
+  return [ref, seen];
+}
+
+/* ── Scroll progress rail ────────────────────────────────────── */
 function ScrollProgress() {
   const [pct, setPct] = useState(0);
   useEffect(() => {
@@ -95,525 +58,649 @@ function ScrollProgress() {
       const h = document.documentElement.scrollHeight - window.innerHeight;
       setPct(h > 0 ? (window.scrollY / h) * 100 : 0);
     };
+    fn();
     window.addEventListener("scroll", fn, { passive: true });
     return () => window.removeEventListener("scroll", fn);
   }, []);
   return (
     <div
-      className="fixed top-0 left-0 z-50 h-[3px] bg-gradient-to-r from-blue-500 via-cyan-400 to-emerald-400"
-      style={{ width: `${pct}%`, transition: "width 80ms linear" }}
+      className="fixed top-0 left-0 z-[60] h-[2px]"
+      style={{
+        width: `${pct}%`,
+        background: `linear-gradient(90deg, ${OK}, ${GOLD})`,
+        transition: "width 90ms linear",
+      }}
     />
   );
 }
 
-/* ── Magnetic Button ─────────────────────────────────────────── */
-function MagneticButton({ children, className, to }) {
-  const ref = useRef(null);
-  const onMove = (e) => {
-    const el = ref.current;
-    const r = el.getBoundingClientRect();
-    const x = (e.clientX - r.left - r.width / 2) * 0.22;
-    const y = (e.clientY - r.top - r.height / 2) * 0.22;
-    el.style.transform = `translate(${x}px, ${y}px)`;
-    el.style.transition = "transform 0.08s ease";
-  };
-  const onLeave = () => {
-    ref.current.style.transform = "translate(0,0)";
-    ref.current.style.transition = "transform 0.45s cubic-bezier(0.23,1,0.32,1)";
-  };
+/* ── Count-up metric ─────────────────────────────────────────── */
+function CountUp({ target, suffix = "", decimals = 0, duration = 1800 }) {
+  const [ref, seen] = useInView(0.4);
+  const [val, setVal] = useState(0);
+  useEffect(() => {
+    if (!seen) return;
+    let raf;
+    const t0 = performance.now();
+    const tick = (now) => {
+      const p = Math.min((now - t0) / duration, 1);
+      setVal(target * (1 - Math.pow(1 - p, 3)));
+      if (p < 1) raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, [seen, target, duration]);
   return (
-    <Link ref={ref} to={to} className={className} onMouseMove={onMove} onMouseLeave={onLeave}>
-      {children}
-    </Link>
+    <span ref={ref}>
+      {val.toFixed(decimals)}
+      {suffix}
+    </span>
   );
 }
 
-/* ── 3-D Tilt Card ───────────────────────────────────────────── */
-function TiltCard({ children, className, style }) {
-  const ref = useRef(null);
-  const onMove = (e) => {
-    const el = ref.current;
-    const r = el.getBoundingClientRect();
-    const x = (e.clientX - r.left) / r.width - 0.5;
-    const y = (e.clientY - r.top) / r.height - 0.5;
-    el.style.transform = `perspective(700px) rotateY(${x * 14}deg) rotateX(${-y * 14}deg) scale(1.03)`;
-    el.style.transition = "transform 0.08s ease";
-  };
-  const onLeave = () => {
-    ref.current.style.transform = "perspective(700px) rotateY(0deg) rotateX(0deg) scale(1)";
-    ref.current.style.transition = "transform 0.5s cubic-bezier(0.23,1,0.32,1)";
-  };
+/* ── Detection bounding box ──────────────────────────────────── */
+function DetectionBox({ tone = "ok", id, top: topLabel, bottom: bottomLabel, style, delay = 0 }) {
+  const ok = tone === "ok";
+  const c = ok ? OK : ALERT;
+  const corner = "absolute w-3.5 h-3.5 border-[2.5px]";
   return (
-    <div ref={ref} className={className} style={style} onMouseMove={onMove} onMouseLeave={onLeave}>
-      {children}
+    <div
+      className="absolute"
+      style={{ ...style, animation: `sv-box-in .55s cubic-bezier(.16,1,.3,1) ${delay}s both` }}
+    >
+      {/* box body */}
+      <div
+        className="absolute inset-0 rounded-[2px]"
+        style={{ border: `1.5px solid ${c}99`, background: `${c}1A` }}
+      />
+      {/* corner brackets */}
+      <span className={`${corner} -top-px -left-px border-r-0 border-b-0`} style={{ borderColor: c }} />
+      <span className={`${corner} -top-px -right-px border-l-0 border-b-0`} style={{ borderColor: c }} />
+      <span className={`${corner} -bottom-px -left-px border-r-0 border-t-0`} style={{ borderColor: c }} />
+      <span className={`${corner} -bottom-px -right-px border-l-0 border-t-0`} style={{ borderColor: c }} />
+
+      {/* top label */}
+      <div
+        className="sv-mono absolute -top-[21px] left-0 flex items-center gap-1.5 px-1.5 py-[3px] text-[9px] font-bold tracking-wide whitespace-nowrap rounded-[2px]"
+        style={{
+          background: c,
+          color: ok ? "#06170F" : "#2A0A05",
+          animation: ok ? undefined : "sv-alert-pulse 1.6s ease-out infinite",
+        }}
+      >
+        {!ok && <FaExclamationTriangle className="text-[8px]" />}
+        {topLabel}
+      </div>
+
+      {/* id tag */}
+      {id && (
+        <div
+          className="sv-mono absolute -top-[21px] right-0 px-1.5 py-[3px] text-[9px] font-bold tracking-wide rounded-[2px] backdrop-blur-sm"
+          style={{ background: "rgba(8,21,15,0.78)", color: c, border: `1px solid ${c}55` }}
+        >
+          {id}
+        </div>
+      )}
+
+      {/* bottom label */}
+      {bottomLabel && (
+        <div
+          className="sv-mono absolute -bottom-[20px] left-0 px-1.5 py-[3px] text-[9px] font-bold tracking-wide whitespace-nowrap rounded-[2px] backdrop-blur-sm"
+          style={{ background: "rgba(8,21,15,0.82)", color: c, border: `1px solid ${c}55` }}
+        >
+          {bottomLabel}
+        </div>
+      )}
     </div>
   );
 }
 
-/* ── Typewriter Text ─────────────────────────────────────────── */
-function TypewriterText({ text, speed = 75, onDone }) {
-  const [shown, setShown] = useState("");
-  useEffect(() => {
-    let i = 0;
-    const id = setInterval(() => {
-      i += 1;
-      setShown(text.slice(0, i));
-      if (i >= text.length) { clearInterval(id); onDone?.(); }
-    }, speed);
-    return () => clearInterval(id);
-  }, [text, speed, onDone]);
+/* ── Compliance rate widget ──────────────────────────────────── */
+function ComplianceRing({ value = 94.2 }) {
+  const [ref, seen] = useInView(0.5);
+  const R = 32;
+  const C = 2 * Math.PI * R;
   return (
-    <>
-      {shown}
-      {shown.length < text.length && (
-        <span
-          className="inline-block w-[3px] h-[0.85em] bg-blue-400 ml-1 align-middle"
-          style={{ animation: "cursor-blink 0.7s steps(1) infinite" }}
-        />
-      )}
-    </>
-  );
-}
-
-/* ── Count-Up Number ─────────────────────────────────────────── */
-function CountUp({ target, suffix = "", duration = 2000 }) {
-  const [val, setVal] = useState(0);
-  const ref = useRef(null);
-  const fired = useRef(false);
-  useEffect(() => {
-    const obs = new IntersectionObserver(([e]) => {
-      if (e.isIntersecting && !fired.current) {
-        fired.current = true;
-        const t0 = performance.now();
-        const tick = (now) => {
-          const p = Math.min((now - t0) / duration, 1);
-          const ease = 1 - Math.pow(1 - p, 3);
-          setVal(Math.round(ease * target));
-          if (p < 1) requestAnimationFrame(tick);
-        };
-        requestAnimationFrame(tick);
-        obs.disconnect();
-      }
-    }, { threshold: 0.4 });
-    if (ref.current) obs.observe(ref.current);
-    return () => obs.disconnect();
-  }, [target, duration]);
-  return <span ref={ref}>{val}{suffix}</span>;
-}
-
-/* ── Feature Data ────────────────────────────────────────────── */
-const FEATURES = [
-  {
-    icon: <FaHardHat />,
-    title: "Helmet Detection",
-    desc: "Detects workers without helmets in real-time using YOLOv8 object detection with state-of-the-art accuracy.",
-    stat: "99.99%", statLabel: "Detection accuracy",
-    ic: "text-blue-400 border-blue-500/30 bg-blue-500/10",
-    sc: "text-blue-400",
-    glow: "0 0 40px rgba(59,130,246,0.15)",
-  },
-  {
-    icon: <FaUserShield />,
-    title: "Vest Detection",
-    desc: "Monitors safety vests and ensures compliance across all workers on site simultaneously.",
-    stat: "<200ms", statLabel: "Detection latency",
-    ic: "text-emerald-400 border-emerald-500/30 bg-emerald-500/10",
-    sc: "text-emerald-400",
-    glow: "0 0 40px rgba(16,185,129,0.15)",
-  },
-  {
-    icon: <FaBell />,
-    title: "Real-time Alerts",
-    desc: "Instant notifications to safety managers the moment a violation is detected anywhere on site.",
-    stat: "0.2s", statLabel: "Alert response time",
-    ic: "text-red-400 border-red-500/30 bg-red-500/10",
-    sc: "text-red-400",
-    glow: "0 0 40px rgba(239,68,68,0.15)",
-  },
-  {
-    icon: <FaVideo />,
-    title: "Video Monitoring",
-    desc: "Analyze live CCTV footage from multiple cameras for continuous 24/7 safety surveillance.",
-    stat: "32+", statLabel: "Cameras per site",
-    ic: "text-yellow-400 border-yellow-500/30 bg-yellow-500/10",
-    sc: "text-yellow-400",
-    glow: "0 0 40px rgba(234,179,8,0.15)",
-  },
-  {
-    icon: <FaChartPie />,
-    title: "Analytics Dashboard",
-    desc: "Get detailed insights, violation trends, compliance reports, and exportable CSV data.",
-    stat: "50+", statLabel: "Report metrics",
-    ic: "text-purple-400 border-purple-500/30 bg-purple-500/10",
-    sc: "text-purple-400",
-    glow: "0 0 40px rgba(168,85,247,0.15)",
-  },
-  {
-    icon: <FaCloud />,
-    title: "Cloud Export",
-    desc: "Export violation logs, compliance certificates, and audit trails directly to cloud storage.",
-    stat: "99.9%", statLabel: "Uptime SLA",
-    ic: "text-cyan-400 border-cyan-500/30 bg-cyan-500/10",
-    sc: "text-cyan-400",
-    glow: "0 0 40px rgba(6,182,212,0.15)",
-  },
-];
-
-/* ── Vertical Features Section ───────────────────────────────── */
-function FeaturesSection() {
-  return (
-    <section id="features" className="relative z-10 py-24">
-      <div className="max-w-7xl mx-auto px-6">
-        <div className="text-center mb-16 animate-on-scroll opacity-0 translate-y-10 transition-all duration-700">
-          <p className="text-blue-400 font-bold tracking-wider uppercase text-sm mb-3">Platform Features</p>
-          <h2 className="text-4xl md:text-5xl font-bold text-white">
-            Everything you need for{" "}
-            <span className="shimmer-text">workplace safety</span>
-          </h2>
-          <p className="text-slate-400 mt-4 text-lg max-w-2xl mx-auto">
-            A complete AI safety stack — from real-time detection to compliance reporting.
-          </p>
+    <div
+      ref={ref}
+      className="sv-glass rounded-2xl p-4 shadow-2xl flex items-center gap-4"
+      style={{ boxShadow: "0 24px 60px -20px rgba(0,0,0,0.85)" }}
+    >
+      <div className="relative flex-shrink-0">
+        <svg width="80" height="80" viewBox="0 0 80 80" className="-rotate-90">
+          <circle cx="40" cy="40" r={R} fill="none" stroke="rgba(247,240,235,0.12)" strokeWidth="6" />
+          <circle
+            cx="40" cy="40" r={R}
+            fill="none" stroke={GOLD} strokeWidth="6" strokeLinecap="round"
+            strokeDasharray={C}
+            strokeDashoffset={seen ? C - (C * value) / 100 : C}
+            style={{ transition: "stroke-dashoffset 1.7s cubic-bezier(.16,1,.3,1) .15s" }}
+          />
+        </svg>
+        <div className="absolute inset-0 flex flex-col items-center justify-center">
+          <span className="text-[15px] font-extrabold text-[#F7F0EB] leading-none">
+            <CountUp target={value} decimals={1} suffix="%" />
+          </span>
         </div>
+      </div>
 
-        <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-6">
-          {FEATURES.map((f, i) => (
-            <TiltCard
+      <div className="pr-1">
+        <p className="sv-mono text-[9px] font-bold uppercase tracking-[0.14em] text-[#F7F0EB]/45">
+          Compliance Rate
+        </p>
+        <p className="text-[13px] font-semibold text-[#F7F0EB] mt-0.5 whitespace-nowrap">
+          Shift average
+        </p>
+        <div className="flex items-end gap-[3px] h-7 mt-2">
+          {[52, 64, 58, 71, 66, 80, 88].map((h, i) => (
+            <span
               key={i}
-              className="animate-on-scroll opacity-0 translate-y-10 transition-all duration-700 bg-white/[0.04] backdrop-blur-lg border border-white/10 p-8 rounded-2xl hover:border-blue-500/30 transition-colors cursor-default"
-              style={{ boxShadow: f.glow, transitionDelay: `${(i % 3) * 100}ms` }}
-            >
-              <div className={`w-12 h-12 rounded-xl flex items-center justify-center border mb-6 text-lg ${f.ic}`}>
-                {f.icon}
-              </div>
-              <h3 className="text-lg font-bold text-white mb-3">{f.title}</h3>
-              <p className="text-slate-400 mb-8 leading-relaxed text-sm">{f.desc}</p>
-              <div className="flex items-end gap-3 pt-6 border-t border-white/10">
-                <span className={`text-2xl font-bold ${f.sc}`}>{f.stat}</span>
-                <span className="text-xs text-slate-500 font-medium mb-1">{f.statLabel}</span>
-              </div>
-            </TiltCard>
+              className="w-[5px] rounded-[1px]"
+              style={{
+                height: seen ? `${h}%` : "6%",
+                background: i === 6 ? GOLD : "rgba(226,164,66,0.32)",
+                transition: `height .8s cubic-bezier(.16,1,.3,1) ${0.3 + i * 0.06}s`,
+              }}
+            />
           ))}
         </div>
       </div>
-    </section>
-  );
-}
-
-/* ── Step Card ───────────────────────────────────────────────── */
-function StepCard({ num, icon, title, desc, color, delay = 0 }) {
-  const C = {
-    blue:    { border: "border-blue-500/25 hover:border-blue-500/60",     icon: "bg-blue-500/10    border-blue-500/30    text-blue-400",    num: "text-blue-500"    },
-    emerald: { border: "border-emerald-500/25 hover:border-emerald-500/60", icon: "bg-emerald-500/10 border-emerald-500/30 text-emerald-400", num: "text-emerald-500" },
-    red:     { border: "border-red-500/25 hover:border-red-500/60",       icon: "bg-red-500/10     border-red-500/30     text-red-400",     num: "text-red-500"     },
-    yellow:  { border: "border-amber-500/25 hover:border-amber-500/60",   icon: "bg-amber-500/10   border-amber-500/30   text-amber-400",   num: "text-amber-500"   },
-  }[color] || {};
-  return (
-    <div
-      className={`animate-on-scroll opacity-0 translate-y-10 transition-all duration-700 bg-slate-900/60 backdrop-blur-md border ${C.border} p-6 rounded-2xl relative hover:scale-105 shadow-xl`}
-      style={{ transitionDelay: `${delay}ms` }}
-    >
-      <span className={`absolute top-5 right-5 text-2xl font-black ${C.num} opacity-80`}>{num}</span>
-      <div className={`w-12 h-12 rounded-xl flex items-center justify-center text-xl mb-6 border ${C.icon}`}>
-        {icon}
-      </div>
-      <h3 className="text-lg font-bold text-white mb-2">{title}</h3>
-      <p className="text-sm text-slate-400 leading-relaxed">{desc}</p>
     </div>
   );
 }
 
-/* ── Dashboard Mock Cards ────────────────────────────────────── */
-const MOCK_CARDS = [
-  { label: "Violations", val: "284", bg: "bg-red-500/10",    border: "border-red-500/20",    tc: "text-red-400",    ping: false },
-  { label: "No Vest",    val: "154", bg: "bg-yellow-500/10", border: "border-yellow-500/20", tc: "text-yellow-400", ping: false },
-  { label: "No Helmet",  val: "130", bg: "bg-orange-500/10", border: "border-orange-500/20", tc: "text-orange-400", ping: false },
-  { label: "Status",     val: "Active", bg: "bg-green-500/10", border: "border-green-500/20", tc: "text-green-400",  ping: true  },
-];
-
-/* ── Landing Page ────────────────────────────────────────────── */
-function Landing() {
-  const [typingDone, setTypingDone] = useState(false);
-  const [pathVisible, setPathVisible] = useState(false);
-  const pathRef = useRef(null);
-
+/* ── Live monitoring feed mockup ─────────────────────────────── */
+function LiveFeed() {
+  const [clock, setClock] = useState("23:48:17");
   useEffect(() => {
-    const obs = new IntersectionObserver(([e]) => {
-      if (e.isIntersecting) { setPathVisible(true); obs.disconnect(); }
-    }, { threshold: 0.2 });
-    if (pathRef.current) obs.observe(pathRef.current);
-    return () => obs.disconnect();
+    const id = setInterval(() => {
+      const d = new Date();
+      setClock(
+        [d.getHours(), d.getMinutes(), d.getSeconds()]
+          .map((n) => String(n).padStart(2, "0"))
+          .join(":")
+      );
+    }, 1000);
+    return () => clearInterval(id);
   }, []);
-
-  useEffect(() => {
-    const obs = new IntersectionObserver((entries) => {
-      entries.forEach((en) => {
-        if (en.isIntersecting) {
-          en.target.classList.remove("opacity-0", "translate-y-10");
-          en.target.classList.add("opacity-100", "translate-y-0");
-          obs.unobserve(en.target);
-        }
-      });
-    }, { threshold: 0.1 });
-    document.querySelectorAll(".animate-on-scroll").forEach((el) => obs.observe(el));
-    return () => obs.disconnect();
-  }, []);
-
-  const reveal = (delay = 0) => ({
-    opacity: typingDone ? 1 : 0,
-    transform: typingDone ? "translateY(0)" : "translateY(12px)",
-    transition: `opacity 0.6s ease ${delay}s, transform 0.6s ease ${delay}s`,
-  });
 
   return (
-    <div className="min-h-screen bg-[#070d1a] text-slate-200 font-sans selection:bg-blue-500/30 overflow-x-hidden">
-      <ScrollProgress />
-      <ParticleCanvas />
+    <div className="relative" style={{ animation: "sv-drift 7s ease-in-out infinite" }}>
+      {/* ambient glow */}
+      <div
+        className="absolute -inset-8 -z-10 rounded-[40px] blur-3xl"
+        style={{ background: "radial-gradient(ellipse at 60% 40%, rgba(226,164,66,0.18), rgba(39,96,75,0.22) 45%, transparent 72%)" }}
+      />
 
-      {/* Aurora blobs */}
-      <div className="fixed inset-0 z-0 pointer-events-none overflow-hidden">
-        <div className="aurora-blob w-[700px] h-[700px] bg-blue-700"
-          style={{ top: "-180px", left: "-180px", animation: "aurora-1 22s ease-in-out infinite" }} />
-        <div className="aurora-blob w-[550px] h-[550px] bg-purple-700"
-          style={{ bottom: "-120px", right: "-160px", animation: "aurora-2 28s ease-in-out infinite" }} />
-        <div className="aurora-blob w-[450px] h-[450px] bg-cyan-800"
-          style={{ top: "38%", right: "12%", animation: "aurora-3 20s ease-in-out infinite" }} />
+      <div
+        className="sv-glass rounded-2xl overflow-hidden"
+        style={{ boxShadow: "0 40px 90px -30px rgba(0,0,0,0.9), 0 0 0 1px rgba(247,240,235,0.06)" }}
+      >
+        {/* ── chrome bar ── */}
+        <div className="flex items-center justify-between px-4 py-2.5 border-b sv-hairline bg-[#08150F]/70">
+          <div className="flex items-center gap-3 min-w-0">
+            <span
+              className="sv-mono flex items-center gap-1.5 px-2 py-[3px] rounded-[3px] text-[9px] font-bold tracking-widest text-[#F7F0EB]"
+              style={{ background: ALERT }}
+            >
+              <span className="w-1.5 h-1.5 rounded-full bg-[#F7F0EB]" style={{ animation: "sv-blink 1.4s ease-in-out infinite" }} />
+              LIVE
+            </span>
+            <span className="sv-mono text-[10px] font-semibold tracking-wider text-[#F7F0EB]/70 truncate">
+              CAM-04 · ZONE B — NORTH YARD
+            </span>
+          </div>
+          <span className="sv-mono text-[10px] font-semibold tracking-wider text-[#F7F0EB]/50 tabular-nums flex-shrink-0">
+            {clock}
+          </span>
+        </div>
+
+        {/* ── feed ── */}
+        <div className="relative aspect-video overflow-hidden sv-feed-fallback sv-scanline">
+          {/* scene photo, degrades to sv-feed-fallback if /bg1.png is absent */}
+          <div className="absolute inset-0 sv-feed-scene" />
+          {/* vignette + CRT texture */}
+          <div
+            className="absolute inset-0"
+            style={{ background: "radial-gradient(ellipse 78% 70% at 50% 45%, transparent 40%, rgba(6,17,12,0.82) 100%)" }}
+          />
+          <div className="absolute inset-0 sv-crt pointer-events-none" />
+
+          {/* HUD frame */}
+          <div className="absolute inset-3 border sv-hairline rounded-[3px] pointer-events-none opacity-40" />
+
+          {/* Detections. Coordinates are tuned to the workers in
+              public/bg1.png (836x388) as cropped by `cover` at 16/9 —
+              swapping the photo means retuning these three boxes. */}
+          <DetectionBox
+            id="#019"
+            tone="ok"
+            top="HELMET 98%"
+            bottom="VEST 96%"
+            delay={0.35}
+            style={{ left: "24.3%", top: "20%", width: "13.2%", height: "66%" }}
+          />
+          <DetectionBox
+            id="#022"
+            tone="ok"
+            top="HELMET 97%"
+            bottom="VEST 99%"
+            delay={0.55}
+            style={{ left: "40.3%", top: "26%", width: "11.8%", height: "62%" }}
+          />
+          <DetectionBox
+            id="#027"
+            tone="ok"
+            top="HELMET 96%"
+            bottom="VEST 98%"
+            delay={0.75}
+            style={{ left: "62%", top: "29%", width: "14.7%", height: "57%" }}
+          />
+
+          {/* inference chip */}
+          <div className="sv-mono absolute bottom-5 left-5 flex items-center gap-2 px-2.5 py-1.5 rounded-md bg-[#08150F]/75 backdrop-blur-sm border sv-hairline">
+            <span className="w-1.5 h-1.5 rounded-full" style={{ background: OK, boxShadow: `0 0 8px ${OK}` }} />
+            <span className="text-[9px] font-bold tracking-wider text-[#F7F0EB]/80">YOLOv8 · 47 FPS</span>
+          </div>
+        </div>
+
+        {/* ── detection tally ── */}
+        <div className="grid grid-cols-4 divide-x divide-[#F7F0EB]/10 border-t sv-hairline bg-[#08150F]/70">
+          {[
+            { n: "5", l: "Persons", c: "#F7F0EB" },
+            { n: "5", l: "Helmets", c: OK },
+            { n: "5", l: "Vests", c: OK },
+            { n: "0", l: "Violations", c: OK },
+          ].map((s) => (
+            <div key={s.l} className="px-3 py-3 text-center">
+              <p className="sv-mono text-lg font-extrabold leading-none" style={{ color: s.c }}>{s.n}</p>
+              <p className="sv-mono text-[8.5px] font-bold uppercase tracking-[0.16em] text-[#F7F0EB]/40 mt-1.5">
+                {s.l}
+              </p>
+            </div>
+          ))}
+        </div>
       </div>
 
-      {/* ── Navbar ── */}
-      <nav className="relative z-10 flex items-center justify-between px-6 py-6 max-w-7xl mx-auto">
-        <div className="flex items-center gap-3">
-          <div className="bg-gradient-to-br from-blue-500 to-cyan-400 p-2.5 rounded-xl shadow-lg shadow-blue-500/25">
-            <FaShieldAlt className="text-white text-xl" />
-          </div>
-          <div>
-            <h1 className="text-xl font-bold text-white tracking-tight">
-              SafeVision<span className="text-blue-400">AI</span>
-            </h1>
-            <p className="text-[10px] text-slate-400 uppercase tracking-widest font-semibold">PPE Monitoring</p>
-          </div>
-        </div>
+      {/* floating compliance widget */}
+      <div className="absolute -top-7 -right-4 sm:-right-8 hidden sm:block">
+        <ComplianceRing value={94.2} />
+      </div>
 
-        <div className="hidden md:flex items-center gap-8 text-sm font-medium text-slate-300">
-          <a href="#features" className="hover:text-white transition-colors">Features</a>
-          <a href="#how-it-works" className="hover:text-white transition-colors">How It Works</a>
-          <Link to="/dashboard" className="hover:text-white transition-colors">Dashboard</Link>
-          <Link to="/about" className="hover:text-white transition-colors">About</Link>
-        </div>
+    </div>
+  );
+}
 
-        <div className="flex items-center gap-4 text-sm font-medium">
-          <Link to="/dashboard" className="text-slate-300 hover:text-white transition-colors">Sign In</Link>
-          <Link
-            to="/dashboard"
-            className="bg-blue-600 hover:bg-blue-500 text-white px-5 py-2.5 rounded-lg font-medium transition-colors"
-            style={{ boxShadow: "0 0 20px rgba(37,99,235,0.5)" }}
-          >
-            Get Started
+/* ── Hero feature strip ──────────────────────────────────────── */
+const HERO_FEATURES = [
+  { icon: <FaBolt />, title: "Real-time Detection", sub: "Sub-200ms violation alerts" },
+  { icon: <FaBullseye />, title: "High Accuracy", sub: "YOLOv8 · 99.2% mAP" },
+  { icon: <FaCloud />, title: "Cloud Ready", sub: "Export, audit & scale" },
+];
+
+/* ── Platform capabilities ───────────────────────────────────── */
+const CAPABILITIES = [
+  { icon: <FaHardHat />, title: "Helmet Detection", desc: "Flags any worker entering a hard-hat zone without head protection, frame by frame.", stat: "99.2%", statLabel: "Detection mAP" },
+  { icon: <FaShieldAlt />, title: "Vest Detection", desc: "Tracks hi-vis compliance across every worker in frame, simultaneously and continuously.", stat: "<200ms", statLabel: "Inference latency" },
+  { icon: <FaBell />, title: "Real-time Alerts", desc: "Pushes violations to safety managers the instant they occur — no manual review loop.", stat: "0.2s", statLabel: "Alert dispatch" },
+  { icon: <FaVideo />, title: "Multi-camera Feeds", desc: "Ingests live CCTV or RTSP streams from across the site for 24/7 surveillance coverage.", stat: "32+", statLabel: "Streams per site" },
+  { icon: <FaChartPie />, title: "Analytics Dashboard", desc: "Compliance trends, violation breakdowns and shift-level reporting in one control center.", stat: "50+", statLabel: "Tracked metrics" },
+  { icon: <FaCloud />, title: "Cloud Export", desc: "Ships violation logs, compliance certificates and audit trails straight to your storage.", stat: "99.9%", statLabel: "Uptime SLA" },
+];
+
+const STEPS = [
+  { n: "01", icon: <FaCloudUploadAlt />, title: "Capture", desc: "Connect a live CCTV feed or upload site footage directly to the platform." },
+  { n: "02", icon: <FaMicrochip />, title: "Detect", desc: "The YOLOv8 model localises every worker and classifies their PPE in real time." },
+  { n: "03", icon: <FaExclamationTriangle />, title: "Analyse", desc: "Violations are scored, deduplicated and escalated to the right supervisor." },
+  { n: "04", icon: <FaFileExport />, title: "Report", desc: "Compliance dashboards and exportable CSV audit trails, ready for inspection." },
+];
+
+/* ── Section heading ─────────────────────────────────────────── */
+function SectionHead({ eyebrow, children, sub }) {
+  return (
+    <div className="text-center max-w-2xl mx-auto mb-16 sv-reveal">
+      <p className="sv-mono text-[11px] font-bold uppercase tracking-[0.22em] mb-4" style={{ color: GOLD }}>
+        {eyebrow}
+      </p>
+      <h2 className="text-[2rem] md:text-[2.75rem] font-extrabold text-[#F7F0EB] leading-[1.12] tracking-[-0.02em]">
+        {children}
+      </h2>
+      {sub && <p className="text-[#F7F0EB]/55 mt-5 text-lg leading-relaxed">{sub}</p>}
+    </div>
+  );
+}
+
+/* ══════════════════════════════════════════════════════════════
+   Landing page
+   ══════════════════════════════════════════════════════════════ */
+function Landing() {
+  useReveal();
+  const [scrolled, setScrolled] = useState(false);
+
+  useEffect(() => {
+    const fn = () => setScrolled(window.scrollY > 24);
+    fn();
+    window.addEventListener("scroll", fn, { passive: true });
+    return () => window.removeEventListener("scroll", fn);
+  }, []);
+
+  return (
+    <div className="sv-root min-h-screen bg-[#08150F] text-[#F7F0EB] overflow-x-hidden selection:bg-[#E2A442]/30">
+      <ScrollProgress />
+
+      {/* ── Navbar ───────────────────────────────────────────── */}
+      <header
+        className={`fixed top-0 inset-x-0 z-50 transition-all duration-500 ${
+          scrolled ? "bg-[#08150F]/85 backdrop-blur-xl border-b border-[#F7F0EB]/10" : "border-b border-transparent"
+        }`}
+      >
+        <nav className="w-full flex items-center justify-between px-5 lg:px-8 py-4">
+          <Link to="/" className="flex items-center gap-3">
+            <div
+              className="w-10 h-10 rounded-xl flex items-center justify-center"
+              style={{ background: "linear-gradient(150deg,#27604B,#1B4436)", border: "1px solid rgba(226,164,66,0.35)" }}
+            >
+              <FaShieldAlt style={{ color: GOLD }} />
+            </div>
+            <div className="leading-none">
+              <p className="text-[17px] font-extrabold tracking-[-0.01em]">
+                SafeVision<span style={{ color: GOLD }}>AI</span>
+              </p>
+              <p className="sv-mono text-[8.5px] font-bold uppercase tracking-[0.22em] text-[#F7F0EB]/40 mt-1">
+                PPE Monitoring
+              </p>
+            </div>
           </Link>
+
+          {/* nav links, sign-in and CTA ride together on the far right */}
+          <div className="flex items-center gap-7">
+            <div className="hidden lg:flex items-center gap-8 text-[14px] font-medium text-[#F7F0EB]/65">
+              <a href="#capabilities" className="hover:text-[#F7F0EB] transition-colors">Capabilities</a>
+              <a href="#how-it-works" className="hover:text-[#F7F0EB] transition-colors">How it works</a>
+              <a href="#control-center" className="hover:text-[#F7F0EB] transition-colors">Control Center</a>
+              <Link to="/about" className="hover:text-[#F7F0EB] transition-colors">About</Link>
+            </div>
+
+            <div className="flex items-center gap-4">
+              <Link
+                to="/dashboard"
+                className="hidden sm:block text-[14px] font-medium text-[#F7F0EB]/65 hover:text-[#F7F0EB] transition-colors"
+              >
+                Sign in
+              </Link>
+              <Link
+                to="/dashboard"
+                className="sv-gold-btn text-[#1B2410] text-[14px] font-bold px-5 py-2.5 rounded-lg transition-shadow duration-300"
+              >
+                Get Started
+              </Link>
+            </div>
+          </div>
+        </nav>
+      </header>
+
+      {/* ── Hero ─────────────────────────────────────────────── */}
+      <section className="relative">
+        {/* background stack: photo → dark green wash → grid → grain */}
+        <div className="absolute inset-0 overflow-hidden">
+          <div className="absolute inset-0 sv-hero-ground" />
+          <div className="absolute inset-0 sv-hero-photo" />
+          <div className="absolute inset-0 sv-hero-tint" />
+          <div className="absolute inset-0 sv-grid" />
+          <div className="absolute inset-0 sv-grain pointer-events-none" />
+          <div className="absolute inset-x-0 bottom-0 h-40 bg-gradient-to-b from-transparent to-[#08150F]" />
         </div>
-      </nav>
 
-      {/* ── Hero ── */}
-      <main className="relative z-10 max-w-7xl mx-auto px-6 pt-16 pb-32 grid lg:grid-cols-2 gap-16 items-center">
-        <div>
-          <div className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 text-xs font-semibold uppercase tracking-wider mb-8">
-            <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
-            AI-Powered Safety Monitoring
-          </div>
+        <div className="relative max-w-7xl mx-auto px-6 pt-36 lg:pt-44 pb-24 grid lg:grid-cols-[1.05fr_1fr] gap-14 xl:gap-20 items-center">
+          {/* copy */}
+          <div>
+            <div
+              className="inline-flex items-center gap-2.5 px-3.5 py-1.5 rounded-full mb-8 sv-reveal"
+              style={{ background: "rgba(95,208,138,0.1)", border: "1px solid rgba(95,208,138,0.28)" }}
+            >
+              <span className="w-1.5 h-1.5 rounded-full" style={{ background: OK, boxShadow: `0 0 8px ${OK}` }} />
+              <span className="sv-mono text-[10px] font-bold uppercase tracking-[0.16em]" style={{ color: OK }}>
+                Live on 32 sites
+              </span>
+            </div>
 
-          <h1 className="text-5xl lg:text-7xl font-extrabold text-white leading-[1.1] mb-6">
-            <TypewriterText text="AI Powered" speed={75} onDone={() => setTypingDone(true)} />
-            <br />
-            <span className="shimmer-text" style={{ display: "inline-block", ...reveal(0.1) }}>
-              PPE Safety
-            </span>
-            <br />
-            <span style={{ display: "inline-block", ...reveal(0.35) }}>
+            <h1
+              className="text-[2.75rem] sm:text-[3.5rem] xl:text-[4.25rem] font-extrabold leading-[1.04] tracking-[-0.03em] mb-7 sv-reveal"
+              style={{ transitionDelay: "80ms" }}
+            >
+              AI Powered <span className="sv-gold-text">PPE Safety</span>
+              <br />
               Monitoring System
-            </span>
-          </h1>
+            </h1>
 
-          <p className="text-lg text-slate-400 mb-10 max-w-xl leading-relaxed" style={reveal(0.6)}>
-            Real-time detection of safety violations using advanced computer vision and deep learning.
-            Protect your workers before incidents happen.
-          </p>
+            <p
+              className="text-[1.0625rem] sm:text-lg text-[#F7F0EB]/60 leading-relaxed max-w-xl mb-10 sv-reveal"
+              style={{ transitionDelay: "160ms" }}
+            >
+              Computer vision that watches every hard-hat zone in real time — detecting missing
+              helmets and vests the moment they appear, so you act before the incident does.
+            </p>
 
-          <div className="flex flex-wrap items-center gap-4 mb-12" style={reveal(0.8)}>
-            <MagneticButton
-              to="/dashboard"
-              className="flex items-center gap-2 bg-blue-600 hover:bg-blue-500 text-white px-6 py-3.5 rounded-xl font-semibold transition-colors shadow-[0_0_25px_rgba(37,99,235,0.5)]"
+            <div className="flex flex-wrap items-center gap-4 mb-14 sv-reveal" style={{ transitionDelay: "240ms" }}>
+              <Link
+                to="/dashboard"
+                className="sv-gold-btn group flex items-center gap-2.5 text-[#1B2410] px-7 py-4 rounded-xl font-bold text-[15px] transition-shadow duration-300"
+              >
+                Get Started
+                <FaArrowRight className="text-xs transition-transform duration-300 group-hover:translate-x-1" />
+              </Link>
+            </div>
+
+            {/* feature strip */}
+            <div
+              className="grid sm:grid-cols-3 gap-6 pt-9 border-t border-[#F7F0EB]/10 sv-reveal"
+              style={{ transitionDelay: "320ms" }}
             >
-              Get Started <FaArrowRight />
-            </MagneticButton>
-            <MagneticButton
-              to="/dashboard"
-              className="flex items-center gap-2 bg-white/[0.06] hover:bg-white/10 border border-white/10 text-white px-6 py-3.5 rounded-xl font-semibold backdrop-blur-sm transition-colors"
-            >
-              View Dashboard <FaChartBar />
-            </MagneticButton>
+              {HERO_FEATURES.map((f) => (
+                <div key={f.title} className="flex items-center gap-3">
+                  <div
+                    className="w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0 text-sm"
+                    style={{ background: "rgba(226,164,66,0.11)", border: "1px solid rgba(226,164,66,0.3)", color: GOLD }}
+                  >
+                    {f.icon}
+                  </div>
+                  <div className="min-w-0">
+                    <p className="text-[13.5px] font-bold text-[#F7F0EB] leading-tight">{f.title}</p>
+                    <p className="text-[11.5px] text-[#F7F0EB]/45 mt-0.5 truncate">{f.sub}</p>
+                  </div>
+                </div>
+              ))}
+            </div>
           </div>
 
-          <div className="flex items-center gap-8 border-t border-white/10 pt-8" style={reveal(1.0)}>
-            {[
-              { icon: <FaBolt />,        label: "Real-time Detection", sub: "Instant violation alerts", cls: "bg-blue-500/10   border-blue-500/20   text-blue-400"   },
-              { icon: <FaCheckCircle />, label: "High Accuracy",       sub: "YOLOv8 AI Model",         cls: "bg-emerald-500/10 border-emerald-500/20 text-emerald-400" },
-              { icon: <FaCloud />,       label: "Cloud Ready",         sub: "Export & Monitor",        cls: "bg-purple-500/10  border-purple-500/20  text-purple-400"  },
-            ].map((item, i) => (
-              <div key={i} className="flex items-center gap-3">
-                <div className={`w-10 h-10 rounded-full border flex items-center justify-center flex-shrink-0 ${item.cls}`}>
-                  {item.icon}
+          {/* live feed mockup */}
+          <div className="sv-reveal lg:mt-0 mt-6" style={{ transitionDelay: "180ms" }}>
+            <LiveFeed />
+          </div>
+        </div>
+      </section>
+
+      {/* ── Stats strip ──────────────────────────────────────── */}
+      <section className="relative border-y border-[#F7F0EB]/[0.08] bg-[#0E2419]/40">
+        <div className="max-w-6xl mx-auto px-6 py-16 grid grid-cols-2 lg:grid-cols-4 gap-10 text-center">
+          {[
+            { t: 99.2, s: "%", d: 1, l: "Detection accuracy" },
+            { t: 180, s: "ms", d: 0, l: "Inference latency" },
+            { t: 32, s: "+", d: 0, l: "Cameras per site" },
+            { t: 24, s: "/7", d: 0, l: "Continuous coverage" },
+          ].map((s, i) => (
+            <div key={s.l} className="sv-reveal" style={{ transitionDelay: `${i * 90}ms` }}>
+              <p className="text-[2.5rem] font-extrabold tracking-[-0.03em] mb-1.5" style={{ color: GOLD }}>
+                <CountUp target={s.t} suffix={s.s} decimals={s.d} />
+              </p>
+              <p className="sv-mono text-[10px] font-bold uppercase tracking-[0.16em] text-[#F7F0EB]/45">
+                {s.l}
+              </p>
+            </div>
+          ))}
+        </div>
+      </section>
+
+      {/* ── Capabilities ─────────────────────────────────────── */}
+      <section id="capabilities" className="relative py-28">
+        <div className="max-w-7xl mx-auto px-6">
+          <SectionHead
+            eyebrow="Platform Capabilities"
+            sub="A complete safety stack — from the camera on the gantry to the compliance report on your desk."
+          >
+            Everything you need to keep a site{" "}
+            <span className="sv-gold-text">compliant</span>
+          </SectionHead>
+
+          <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-5">
+            {CAPABILITIES.map((c, i) => (
+              <div
+                key={c.title}
+                className="sv-reveal group relative rounded-2xl p-7 bg-[#0E2419]/60 border border-[#F7F0EB]/[0.09] hover:border-[#E2A442]/35 transition-colors duration-400 overflow-hidden"
+                style={{ transitionDelay: `${(i % 3) * 90}ms` }}
+              >
+                <div
+                  className="absolute inset-0 opacity-0 group-hover:opacity-100 transition-opacity duration-500 pointer-events-none"
+                  style={{ background: "radial-gradient(ellipse 80% 60% at 50% 0%, rgba(226,164,66,0.09), transparent 70%)" }}
+                />
+                <div
+                  className="relative w-11 h-11 rounded-xl flex items-center justify-center mb-6"
+                  style={{ background: "rgba(226,164,66,0.1)", border: "1px solid rgba(226,164,66,0.28)", color: GOLD }}
+                >
+                  {c.icon}
                 </div>
-                <div>
-                  <p className="text-sm font-bold text-white">{item.label}</p>
-                  <p className="text-xs text-slate-400">{item.sub}</p>
+                <h3 className="relative text-[17px] font-bold text-[#F7F0EB] mb-2.5">{c.title}</h3>
+                <p className="relative text-[13.5px] text-[#F7F0EB]/50 leading-relaxed mb-7">{c.desc}</p>
+                <div className="relative flex items-baseline gap-2.5 pt-5 border-t border-[#F7F0EB]/[0.09]">
+                  <span className="text-[22px] font-extrabold tracking-tight" style={{ color: GOLD }}>{c.stat}</span>
+                  <span className="sv-mono text-[9.5px] font-bold uppercase tracking-[0.14em] text-[#F7F0EB]/38">
+                    {c.statLabel}
+                  </span>
                 </div>
               </div>
             ))}
           </div>
         </div>
-
-        {/* Hero visual */}
-        <div className="relative" style={{ animation: "float-card 5s ease-in-out infinite" }}>
-          <div className="absolute inset-0 bg-gradient-to-tr from-blue-500/20 to-emerald-500/20 blur-3xl -z-10 rounded-full" />
-          <div className="relative bg-slate-900/80 backdrop-blur-xl border border-white/10 rounded-2xl shadow-2xl overflow-visible group">
-            <div className="aspect-video bg-slate-800 relative rounded-2xl overflow-hidden">
-              <img src={heroImage} alt="Construction Site" className="w-full h-full object-cover opacity-80" />
-              <div className="absolute top-[20%] left-[30%] w-32 h-48 border-2 border-emerald-500 bg-emerald-500/10 rounded">
-                <div className="absolute -top-6 left-0 bg-emerald-500 text-white text-[10px] font-bold px-2 py-0.5 rounded-sm">Helmet: 99.99%</div>
-                <div className="absolute -bottom-6 left-0 bg-emerald-500 text-white text-[10px] font-bold px-2 py-0.5 rounded-sm">Safety Vest: 99.99%</div>
-              </div>
-              <div className="absolute top-[15%] right-[20%] w-28 h-44 border-2 border-red-500 bg-red-500/10 rounded">
-                <div className="absolute -top-6 left-0 bg-red-500 text-white text-[10px] font-bold px-2 py-0.5 rounded-sm">No Helmet</div>
-              </div>
-              <div className="absolute top-4 left-4 bg-black/60 backdrop-blur-md border border-white/10 px-3 py-1.5 rounded-lg flex items-center gap-2">
-                <span className="w-2 h-2 rounded-full bg-red-500 animate-pulse" />
-                <span className="text-xs font-bold text-white">LIVE</span>
-              </div>
-            </div>
-            <div className="absolute -bottom-5 -left-5 bg-slate-800/90 backdrop-blur-xl border border-white/10 p-4 rounded-xl shadow-xl flex items-center gap-4 group-hover:-translate-y-2 transition-transform duration-500">
-              <div className="w-10 h-10 rounded-lg bg-red-500/10 flex items-center justify-center text-red-400">
-                <FaExclamationTriangle />
-              </div>
-              <div>
-                <p className="text-[10px] text-slate-400 font-bold uppercase">Active Violations</p>
-                <p className="text-xl font-bold text-white">3</p>
-              </div>
-            </div>
-            <div className="absolute -top-5 -right-5 bg-slate-800/90 backdrop-blur-xl border border-white/10 p-4 rounded-xl shadow-xl flex items-center gap-4 group-hover:-translate-y-2 transition-transform duration-500 delay-100">
-              <div className="w-10 h-10 rounded-lg bg-emerald-500/10 flex items-center justify-center text-emerald-400">
-                <FaCheckCircle />
-              </div>
-              <div>
-                <p className="text-[10px] text-slate-400 font-bold uppercase">Compliance Rate</p>
-                <p className="text-xl font-bold text-white">87%</p>
-              </div>
-            </div>
-          </div>
-        </div>
-      </main>
-
-      {/* ── Features Grid ── */}
-      <FeaturesSection />
-
-      {/* ── Stats Strip ── */}
-      <section className="relative z-10 py-20 border-y border-white/[0.06]">
-        <div className="max-w-5xl mx-auto px-6 grid grid-cols-2 lg:grid-cols-4 gap-10 text-center">
-          {[
-            { target: 99,  suffix: "%",  label: "Detection Accuracy", color: "text-blue-400"    },
-            { target: 200, suffix: "ms", label: "Response Latency",   color: "text-emerald-400" },
-            { target: 32,  suffix: "+",  label: "Cameras Per Site",   color: "text-purple-400"  },
-            { target: 50,  suffix: "+",  label: "Report Metrics",     color: "text-yellow-400"  },
-          ].map((s, i) => (
-            <div
-              key={i}
-              className="animate-on-scroll opacity-0 translate-y-10 transition-all duration-700"
-              style={{ transitionDelay: `${i * 100}ms` }}
-            >
-              <div className={`text-5xl font-black mb-2 ${s.color}`}>
-                <CountUp target={s.target} suffix={s.suffix} />
-              </div>
-              <p className="text-slate-400 text-sm font-medium">{s.label}</p>
-            </div>
-          ))}
-        </div>
       </section>
 
-      {/* ── Dashboard Preview ── */}
-      <section className="relative z-10 py-24 border-b border-white/[0.06]">
+      {/* ── Control center preview ───────────────────────────── */}
+      <section id="control-center" className="relative py-28 border-y border-[#F7F0EB]/[0.08] bg-[#0E2419]/30">
         <div className="max-w-7xl mx-auto px-6">
-          <div className="text-center mb-16 animate-on-scroll opacity-0 translate-y-10 transition-all duration-700">
-            <p className="text-blue-400 font-bold tracking-wider uppercase text-sm mb-4">Interactive Platform</p>
-            <h2 className="text-4xl md:text-5xl font-bold text-white mb-6">
-              Intelligent{" "}
-              <span className="shimmer-text">Control Center</span>
-            </h2>
-            <p className="text-slate-400 text-lg max-w-2xl mx-auto">
-              Monitor compliance, analyze violation trends, and manage safety alerts through our comprehensive dashboard.
-            </p>
-          </div>
+          <SectionHead
+            eyebrow="Interactive Platform"
+            sub="Monitor compliance, analyse violation trends and manage alerts across every site from one screen."
+          >
+            The <span className="sv-gold-text">Control Center</span>
+          </SectionHead>
 
-          <div className="bg-slate-900/60 backdrop-blur-xl border border-white/10 rounded-2xl shadow-2xl overflow-hidden max-w-5xl mx-auto animate-on-scroll opacity-0 translate-y-10 transition-all duration-1000">
-            {/* Browser bar */}
-            <div className="bg-slate-950/80 px-4 py-3 flex items-center gap-2 border-b border-white/[0.06]">
+          <div className="sv-reveal max-w-5xl mx-auto rounded-2xl overflow-hidden sv-glass" style={{ boxShadow: "0 40px 90px -30px rgba(0,0,0,0.85)" }}>
+            {/* browser chrome */}
+            <div className="flex items-center gap-2 px-4 py-3 border-b sv-hairline bg-[#08150F]/70">
               <div className="flex gap-1.5">
-                <span className="w-3 h-3 rounded-full bg-red-500/80" />
-                <span className="w-3 h-3 rounded-full bg-yellow-500/80" />
-                <span className="w-3 h-3 rounded-full bg-green-500/80" />
+                {[ALERT, GOLD, OK].map((c) => (
+                  <span key={c} className="w-2.5 h-2.5 rounded-full" style={{ background: c, opacity: 0.7 }} />
+                ))}
               </div>
-              <div className="bg-slate-900/60 text-slate-500 text-xs px-4 py-1.5 rounded-lg w-72 mx-auto text-center border border-white/[0.05] truncate">
-                https://safevision.ai/dashboard
+              <div className="sv-mono mx-auto text-[10px] text-[#F7F0EB]/40 px-4 py-1.5 rounded-md bg-[#F7F0EB]/[0.05] border sv-hairline w-72 text-center truncate">
+                safevision.ai/dashboard
               </div>
             </div>
 
-            {/* Dashboard UI */}
-            <div className="bg-slate-950/40 p-6 grid md:grid-cols-[160px_1fr] gap-6 text-left">
-              <div className="hidden md:flex flex-col gap-4 border-r border-white/[0.06] pr-4 text-xs">
-                <div className="font-bold text-slate-400 tracking-wider mb-2">MONITOR</div>
-                <div className="flex items-center gap-2 text-white font-semibold">
-                  <span className="w-2 h-2 rounded bg-blue-500" /> Dashboard
-                </div>
-                {["Image Detection", "Video Detection", "Violations"].map((l) => (
-                  <div key={l} className="flex items-center gap-2 text-slate-500">
-                    <span className="w-2 h-2 rounded bg-slate-700" /> {l}
+            <div className="p-5 sm:p-6 grid md:grid-cols-[150px_1fr] gap-6 bg-[#08150F]/40">
+              {/* sidebar */}
+              <div className="hidden md:flex flex-col gap-3.5 pr-5 border-r sv-hairline">
+                <p className="sv-mono text-[9px] font-bold uppercase tracking-[0.18em] text-[#F7F0EB]/35 mb-1">
+                  Monitor
+                </p>
+                {[
+                  { l: "Dashboard", active: true },
+                  { l: "Image Detection" },
+                  { l: "Video Detection" },
+                  { l: "Violations" },
+                  { l: "Reports" },
+                ].map((it) => (
+                  <div
+                    key={it.l}
+                    className={`flex items-center gap-2.5 text-[12px] ${
+                      it.active ? "text-[#F7F0EB] font-semibold" : "text-[#F7F0EB]/40"
+                    }`}
+                  >
+                    <span
+                      className="w-1.5 h-1.5 rounded-[2px] flex-shrink-0"
+                      style={{ background: it.active ? GOLD : "rgba(247,240,235,0.2)" }}
+                    />
+                    {it.l}
                   </div>
                 ))}
               </div>
 
-              <div className="space-y-5">
+              {/* body */}
+              <div className="space-y-4 min-w-0">
                 <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-                  {MOCK_CARDS.map((card) => (
-                    <div key={card.label} className={`${card.bg} border ${card.border} p-3 rounded-xl`}>
-                      <span className="text-[10px] text-slate-400 font-bold uppercase">{card.label}</span>
-                      <div className={`text-xl font-bold ${card.tc} mt-1 flex items-center justify-between`}>
-                        {card.val}
-                        {card.ping && <span className="w-2 h-2 bg-green-400 rounded-full animate-ping" />}
+                  {[
+                    { l: "Violations", v: "284", c: ALERT },
+                    { l: "No Vest", v: "154", c: GOLD },
+                    { l: "No Helmet", v: "130", c: GOLD },
+                    { l: "Status", v: "Active", c: OK, ping: true },
+                  ].map((k) => (
+                    <div
+                      key={k.l}
+                      className="rounded-xl p-3 border"
+                      style={{ background: `${k.c}12`, borderColor: `${k.c}2E` }}
+                    >
+                      <p className="sv-mono text-[8.5px] font-bold uppercase tracking-[0.14em] text-[#F7F0EB]/45">
+                        {k.l}
+                      </p>
+                      <div className="flex items-center justify-between mt-1.5">
+                        <span className="text-[19px] font-extrabold leading-none" style={{ color: k.c }}>{k.v}</span>
+                        {k.ping && <span className="w-1.5 h-1.5 rounded-full" style={{ background: k.c, animation: "sv-blink 1.4s ease-in-out infinite" }} />}
                       </div>
                     </div>
                   ))}
                 </div>
 
-                <div className="bg-slate-900/50 border border-white/[0.06] p-4 rounded-xl">
-                  <div className="flex justify-between items-center mb-3">
-                    <span className="text-xs font-bold text-slate-300">Compliance Rate over Week</span>
-                    <span className="text-[10px] text-emerald-400 bg-emerald-500/10 px-2 py-0.5 rounded font-semibold">99.99% Target</span>
+                {/* chart */}
+                <div className="rounded-xl p-4 bg-[#F7F0EB]/[0.03] border sv-hairline">
+                  <div className="flex items-center justify-between mb-4">
+                    <p className="text-[12px] font-semibold text-[#F7F0EB]/80">Compliance rate — this week</p>
+                    <span
+                      className="sv-mono text-[9px] font-bold px-2 py-0.5 rounded"
+                      style={{ background: `${OK}1A`, color: OK }}
+                    >
+                      95% TARGET
+                    </span>
                   </div>
-                  <div className="h-28 flex items-end gap-2 px-1">
-                    {[60, 75, 55, 80, 90].map((h, i) => (
-                      <div key={i} className="w-full rounded-t bg-slate-800 flex flex-col justify-end" style={{ height: `${h}%` }}>
-                        <div className="bg-gradient-to-t from-blue-600 to-blue-400 rounded-t w-full" style={{ height: `${h * 0.85}%` }} />
+                  <div className="h-24 flex items-end gap-2">
+                    {[72, 86, 64, 91, 88, 79, 94].map((h, i) => (
+                      <div key={i} className="flex-1 rounded-t-[3px] bg-[#F7F0EB]/[0.05] flex items-end" style={{ height: "100%" }}>
+                        <div
+                          className="w-full rounded-t-[3px]"
+                          style={{
+                            height: `${h}%`,
+                            background: h >= 90
+                              ? `linear-gradient(180deg, ${GOLD}, ${GOLD}66)`
+                              : `linear-gradient(180deg, rgba(39,96,75,1), rgba(39,96,75,0.45))`,
+                          }}
+                        />
                       </div>
                     ))}
                   </div>
-                  <div className="flex justify-between text-[9px] text-slate-500 mt-2 px-1">
-                    {["Mon", "Tue", "Wed", "Thu", "Fri"].map((d) => <span key={d}>{d}</span>)}
+                  <div className="sv-mono flex justify-between text-[8.5px] font-bold tracking-wider text-[#F7F0EB]/30 mt-2.5">
+                    {["MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN"].map((d) => <span key={d}>{d}</span>)}
                   </div>
                 </div>
 
-                <div className="bg-red-500/10 border border-red-500/30 p-3 rounded-lg flex items-center justify-between text-xs">
-                  <div className="flex items-center gap-2 text-red-400">
-                    <span className="w-2 h-2 bg-red-500 rounded-full animate-ping" />
-                    <strong>Alert:</strong> Helmet Missing violation detected at Gate 3.
-                  </div>
-                  <span className="text-[10px] text-slate-500">Just now</span>
+                {/* alert row */}
+                <div
+                  className="rounded-lg px-3.5 py-2.5 flex items-center justify-between gap-3 border"
+                  style={{ background: `${ALERT}12`, borderColor: `${ALERT}33` }}
+                >
+                  <p className="text-[11.5px] flex items-center gap-2 min-w-0" style={{ color: ALERT }}>
+                    <span className="w-1.5 h-1.5 rounded-full flex-shrink-0" style={{ background: ALERT, animation: "sv-blink 1.2s ease-in-out infinite" }} />
+                    <strong className="font-bold">Alert</strong>
+                    <span className="truncate text-[#F7F0EB]/70">Helmet missing detected at Gate 3</span>
+                  </p>
+                  <span className="sv-mono text-[9px] text-[#F7F0EB]/35 flex-shrink-0">JUST NOW</span>
                 </div>
               </div>
             </div>
@@ -621,66 +708,106 @@ function Landing() {
         </div>
       </section>
 
-      {/* ── How It Works ── */}
-      <section id="how-it-works" ref={pathRef} className="relative z-10 py-24">
+      {/* ── How it works ─────────────────────────────────────── */}
+      <section id="how-it-works" className="relative py-28">
         <div className="max-w-7xl mx-auto px-6">
-          <div className="text-center mb-16 animate-on-scroll opacity-0 translate-y-10 transition-all duration-700">
-            <h2 className="text-4xl md:text-5xl font-bold text-white mb-4">
-              From camera to{" "}
-              <span className="text-emerald-400">compliance report</span>
-              <br />in under 1 second
-            </h2>
-            <p className="text-slate-400 text-lg">Four simple steps from raw footage to actionable safety insights.</p>
-          </div>
+          <SectionHead
+            eyebrow="How It Works"
+            sub="Four steps from raw footage to an actionable safety record."
+          >
+            From camera to <span className="sv-gold-text">compliance report</span>
+            <br className="hidden sm:block" /> in under a second
+          </SectionHead>
 
-          {/* Animated connecting line */}
-          <div className="hidden md:block px-[10%] mb-[-44px] relative z-10">
-            <div
-              className="h-[1px] bg-gradient-to-r from-transparent via-blue-400/50 to-transparent"
-              style={{ width: pathVisible ? "100%" : "0%", transition: "width 1.4s ease-in-out 0.2s" }}
-            />
-          </div>
+          <div className="relative grid md:grid-cols-4 gap-5">
+            {/* connector rail */}
+            <div className="hidden md:block absolute top-[52px] left-[12%] right-[12%] h-px bg-gradient-to-r from-transparent via-[#E2A442]/30 to-transparent" />
 
-          <div className="grid md:grid-cols-4 gap-6">
-            <StepCard num="01" icon={<FaCloudUploadAlt />} title="Upload / Capture"   desc="Upload image or video from site, or connect live CCTV camera feeds directly."         color="blue"    delay={0}   />
-            <StepCard num="02" icon={<FaMicrochip />}      title="AI Detection"        desc="YOLOv8 model detects PPE compliance — helmets, vests, and all safety gear."            color="emerald" delay={100} />
-            <StepCard num="03" icon={<FaExclamationTriangle />} title="Violation Analysis" desc="System identifies violations, calculates confidence scores, and triggers alerts." color="red"     delay={200} />
-            <StepCard num="04" icon={<FaFileExport />}     title="Export & Report"     desc="View analytics, compliance certificates, and export full CSV audit data."              color="yellow"  delay={300} />
+            {STEPS.map((s, i) => (
+              <div
+                key={s.n}
+                className="sv-reveal relative rounded-2xl p-6 bg-[#0E2419]/60 border border-[#F7F0EB]/[0.09] hover:border-[#E2A442]/30 transition-colors duration-400"
+                style={{ transitionDelay: `${i * 110}ms` }}
+              >
+                <span className="sv-mono absolute top-5 right-5 text-[11px] font-bold tracking-wider text-[#F7F0EB]/20">
+                  {s.n}
+                </span>
+                <div
+                  className="w-11 h-11 rounded-xl flex items-center justify-center mb-5"
+                  style={{ background: "rgba(27,68,54,0.9)", border: "1px solid rgba(226,164,66,0.3)", color: GOLD }}
+                >
+                  {s.icon}
+                </div>
+                <h3 className="text-[16px] font-bold text-[#F7F0EB] mb-2">{s.title}</h3>
+                <p className="text-[13px] text-[#F7F0EB]/50 leading-relaxed">{s.desc}</p>
+              </div>
+            ))}
           </div>
         </div>
       </section>
 
-      {/* ── CTA Section ── */}
-      <section className="relative z-10 py-28 text-center">
-        <div className="animate-on-scroll opacity-0 translate-y-10 transition-all duration-700 max-w-2xl mx-auto px-6">
-          <p className="text-blue-400 font-bold tracking-wider uppercase text-sm mb-4">Get Started Today</p>
-          <h2 className="text-4xl md:text-5xl font-bold text-white mb-6">
-            Ready to make your site{" "}
-            <span className="shimmer-text">safer?</span>
+      {/* ── Final CTA ────────────────────────────────────────── */}
+      <section className="relative py-28 overflow-hidden">
+        <div
+          className="absolute inset-0 pointer-events-none"
+          style={{ background: "radial-gradient(ellipse 55% 60% at 50% 50%, rgba(27,68,54,0.75), transparent 72%)" }}
+        />
+        <div className="relative max-w-2xl mx-auto px-6 text-center sv-reveal">
+          <p className="sv-mono text-[11px] font-bold uppercase tracking-[0.22em] mb-5" style={{ color: GOLD }}>
+            Get Started Today
+          </p>
+          <h2 className="text-[2.25rem] md:text-[3rem] font-extrabold leading-[1.1] tracking-[-0.025em] mb-6">
+            Ready to make your site <span className="sv-gold-text">safer?</span>
           </h2>
-          <p className="text-slate-400 text-lg mb-10">
-            Join thousands of safety managers using SafeVision AI to protect their workers in real-time.
+          <p className="text-[#F7F0EB]/55 text-lg leading-relaxed mb-10">
+            Point SafeVisionAI at your existing cameras and start catching PPE violations
+            in real time — no new hardware required.
           </p>
           <div className="flex flex-col sm:flex-row items-center justify-center gap-4">
-            <MagneticButton
+            <Link
               to="/dashboard"
-              className="flex items-center gap-2 bg-blue-600 hover:bg-blue-500 text-white px-8 py-4 rounded-xl font-bold text-lg transition-colors shadow-[0_0_35px_rgba(37,99,235,0.6),0_0_70px_rgba(37,99,235,0.2)]"
+              className="sv-gold-btn group flex items-center gap-2.5 text-[#1B2410] px-8 py-4 rounded-xl font-bold text-base transition-shadow duration-300"
             >
-              Launch Dashboard <FaArrowRight />
-            </MagneticButton>
-            <MagneticButton
+              Get Started
+              <FaArrowRight className="text-xs transition-transform duration-300 group-hover:translate-x-1" />
+            </Link>
+            <Link
               to="/about"
-              className="flex items-center gap-2 text-slate-300 hover:text-white border border-white/10 hover:border-white/25 px-8 py-4 rounded-xl font-medium transition-all backdrop-blur-sm"
+              className="px-8 py-4 rounded-xl font-semibold text-base text-[#F7F0EB] border border-[#F7F0EB]/18 hover:bg-[#F7F0EB]/[0.06] hover:border-[#F7F0EB]/30 transition-all duration-300"
             >
-              Learn More
-            </MagneticButton>
+              Learn more
+            </Link>
+          </div>
+
+          <div className="flex flex-wrap items-center justify-center gap-x-7 gap-y-3 mt-11">
+            {["No new hardware", "Works with existing CCTV", "Deploy in a day"].map((t) => (
+              <span key={t} className="flex items-center gap-2 text-[12.5px] text-[#F7F0EB]/45">
+                <FaCheck className="text-[9px]" style={{ color: OK }} />
+                {t}
+              </span>
+            ))}
           </div>
         </div>
       </section>
 
-      {/* ── Footer ── */}
-      <footer className="relative z-10 border-t border-white/[0.06] py-8 text-center text-slate-500 text-sm">
-        <p>&copy; 2026 SafeVision AI. All rights reserved.</p>
+      {/* ── Footer ───────────────────────────────────────────── */}
+      <footer className="relative border-t border-[#F7F0EB]/[0.08] bg-[#08150F]">
+        <div className="max-w-7xl mx-auto px-6 py-10 flex flex-col sm:flex-row items-center justify-between gap-5">
+          <div className="flex items-center gap-3">
+            <div
+              className="w-8 h-8 rounded-lg flex items-center justify-center"
+              style={{ background: "linear-gradient(150deg,#27604B,#1B4436)", border: "1px solid rgba(226,164,66,0.3)" }}
+            >
+              <FaShieldAlt className="text-xs" style={{ color: GOLD }} />
+            </div>
+            <p className="text-[14px] font-bold">
+              SafeVision<span style={{ color: GOLD }}>AI</span>
+            </p>
+          </div>
+          <p className="sv-mono text-[10.5px] tracking-wider text-[#F7F0EB]/35">
+            © 2026 SafeVisionAI — All rights reserved
+          </p>
+        </div>
       </footer>
     </div>
   );
