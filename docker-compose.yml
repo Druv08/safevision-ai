@@ -1,0 +1,23 @@
+# Backend only; run the frontend with `npm run dev` (see README).
+# Weights are not in git: they are mounted read-only from the host.
+services:
+  backend:
+    build: ./backend
+    env_file: backend/.env
+    environment:
+      ENV: production
+      UPLOAD_DIR: /app/uploads
+      PPE_MODEL_PATH: /weights/training-runs/safevision_yolov8n_5class_v2/weights/best.pt
+      HELMET_MODEL_PATH: /weights/training-runs/safevision_yolov8n_v1/weights/best.pt
+      PERSON_MODEL_PATH: /weights/yolov8n.pt
+    volumes:
+      - ./ai-model/outputs/training-runs:/weights/training-runs:ro
+      - ./yolov8n.pt:/weights/yolov8n.pt:ro
+    ports:
+      - "8000:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    restart: unless-stopped

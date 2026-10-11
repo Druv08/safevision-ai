@@ -348,9 +348,12 @@ The two detection endpoints are deliberately asymmetric:
 The reason is purely about response size and CPU cost. A 30-second video at 30 FPS = 900 frames; even at `frame_skip=10` that is 90 inferences and potentially thousands of boxes. Returning all of that as JSON per HTTP call would be huge and is not actually useful for a dashboard - the dashboard wants the counts. If a future feature needs per-frame data, it should be a separate endpoint that streams (Server-Sent Events or chunked NDJSON) rather than building it into this one.
 
 ### 15.4 Upload-file safety
-- Allowed-extension whitelists are enforced **at the route layer** before the file is read into memory (image: `.jpg .jpeg .png`; video: `.mp4 .avi .mov .mkv`).
-- The original filename is **never** trusted on disk. Every upload is renamed to `<utc-timestamp>_<uuid4-hex>.<ext>` before being written. This prevents path-traversal (`../../etc/passwd`), filename collisions, and unicode/space issues in PowerShell / shell follow-up steps.
-- Uploads land in `backend/uploads/`, which is git-ignored. They are kept on disk for now because the inference functions take a path; if the backend later gains a streaming variant we can switch to in-memory `BytesIO`.
+> **Correction (Oct 2026):** the original version of this section said an extension whitelist was enforced on every upload. That was not true of the backend that shipped: `routes/detection.py` accepted any extension and kept the client's file name stem. The bullets below describe the behaviour after the Supabase/security rework; the rest of section 15 describes an earlier design (e.g. `/api/` prefixes, CORS on port 3000) and `README.md` is the source of truth for current endpoints.
+
+- Allowed extensions are enforced in `routes/detection.py` (image: `.jpg .jpeg .png`; video: `.mp4 .avi .mov .webm`). `.mkv` is not accepted.
+- The file's magic bytes must match its extension (a renamed text file is rejected with 400), and uploads over `MAX_UPLOAD_MB` are rejected with 413.
+- The original filename is **never** used on disk. Every upload is saved as `<uuid4-hex>.<ext>` in `UPLOAD_DIR` and deleted after processing, whether detection succeeds or fails.
+- Detection requests are rate-limited per user (`RATE_LIMIT_PER_MINUTE`).
 
 ### 15.5 Violation rule consistency
 The per-image violation summary in `detection_service.py` uses the **same** rule mapping as the local `ai-model/inference/violation_detection.py`:

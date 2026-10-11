@@ -1,62 +1,39 @@
-import { Routes, Route } from "react-router-dom";
-import Landing from "./pages/Landing";
-
+import { lazy, Suspense } from "react";
+import { Routes, Route, Navigate } from "react-router-dom";
+import { AUTH_DISABLED } from "./context/AuthContext";
 import MainLayout from "./layouts/MainLayout";
+import ProtectedRoute from "./components/ProtectedRoute";
+import { PageFallback } from "./components/ui";
 
-import Dashboard from "./pages/Dashboard";
-import ImageDetection from "./pages/ImageDetection";
-import VideoDetection from "./pages/VideoDetection";
-import Violations from "./pages/Violations";
-import About from "./pages/About";
+// Route-level code splitting: the dashboard's chart library only loads when needed.
+const Landing = lazy(() => import("./pages/Landing"));
+const Login = lazy(() => import("./pages/Login"));
+const Dashboard = lazy(() => import("./pages/Dashboard"));
+const ImageDetection = lazy(() => import("./pages/ImageDetection"));
+const VideoDetection = lazy(() => import("./pages/VideoDetection"));
+const LiveMonitoring = lazy(() => import("./pages/LiveMonitoring"));
+const Violations = lazy(() => import("./pages/Violations"));
+const About = lazy(() => import("./pages/About"));
 
 function App() {
   return (
-    <Routes>
-      {/* Landing Page without Layout */}
-      <Route path="/" element={<Landing />} />
+    <Suspense fallback={<PageFallback />}>
+      <Routes>
+        <Route path="/" element={<Landing />} />
+        <Route path="/login" element={AUTH_DISABLED ? <Navigate to="/dashboard" replace /> : <Login />} />
 
-      {/* Dashboard Routes with Layout */}
-      <Route
-        path="/dashboard"
-        element={
-          <MainLayout>
-            <Dashboard />
-          </MainLayout>
-        }
-      />
-      <Route
-        path="/image-detection"
-        element={
-          <MainLayout>
-            <ImageDetection />
-          </MainLayout>
-        }
-      />
-      <Route
-        path="/video-detection"
-        element={
-          <MainLayout>
-            <VideoDetection />
-          </MainLayout>
-        }
-      />
-      <Route
-        path="/violations"
-        element={
-          <MainLayout>
-            <Violations />
-          </MainLayout>
-        }
-      />
-      <Route
-        path="/about"
-        element={
-          <MainLayout>
-            <About />
-          </MainLayout>
-        }
-      />
-    </Routes>
+        <Route element={<ProtectedRoute><MainLayout /></ProtectedRoute>}>
+          <Route path="/dashboard" element={<Dashboard />} />
+          <Route path="/image-detection" element={<ImageDetection />} />
+          <Route path="/video-detection" element={<VideoDetection />} />
+          <Route path="/live" element={<LiveMonitoring />} />
+          <Route path="/violations" element={<Violations />} />
+          <Route path="/about" element={<About />} />
+        </Route>
+
+        <Route path="*" element={<Navigate to="/" replace />} />
+      </Routes>
+    </Suspense>
   );
 }
 

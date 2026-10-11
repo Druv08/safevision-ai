@@ -1,170 +1,69 @@
-from pathlib import Path
 import cv2
-import csv
-import uuid
-import time
-from datetime import datetime
 
-from services.model_service import get_model, get_helmet_model
+from config import settings
+from services.detection_service import analyze_frame
+from services.model_service import model_version
+from services.violations_service import save_violation
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
-
-OUTPUT_DIR = (
-    PROJECT_ROOT
-    / "ai-model"
-    / "outputs"
-    / "violations"
-)
-
-SCREENSHOT_DIR = OUTPUT_DIR / "screenshots"
-
-CSV_PATH = OUTPUT_DIR / "violations_log.csv"
-
-OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-SCREENSHOT_DIR.mkdir(parents=True, exist_ok=True)
-
-COOLDOWN_SECONDS = 5
-
-# v1 model (17-class construction-safety) class IDs
-V1_HARDHAT_CLS = 4
-V1_NO_HARDHAT_CLS = 6
-
-# 5-class model class IDs for vest
-VEST_CLS = 3
-NO_VEST_CLS = 4
+# Used when the container reports no usable frame rate.
+FALLBACK_FPS = 30.0
 
 
-def save_violation(
-    frame,
-    source_name,
-    frame_number,
-    violation_type,
-    severity,
-    confidence
-):
-    timestamp = datetime.now().strftime(
-        "%Y-%m-%d_%H-%M-%S"
-    )
-
-    violation_id = str(uuid.uuid4())[:8]
-
-    screenshot_name = (
-        f"{timestamp}_{violation_id}_{violation_type.replace(' ','_')}.jpg"
-    )
-
-    screenshot_path = (
-        SCREENSHOT_DIR / screenshot_name
-    )
-
-    cv2.imwrite(
-        str(screenshot_path),
-        frame
-    )
-
-    with open(
-        CSV_PATH,
-        "a",
-        newline=""
-    ) as f:
-
-        writer = csv.writer(f)
-
-        writer.writerow([
-            violation_id,
-            timestamp,
-            source_name,
-            frame_number,
-            violation_type,
-            severity,
-            round(confidence, 3),
-            str(screenshot_path)
-        ])
+class VideoDecodeError(ValueError):
+    pass
 
 
-def detect_video(video_path):
+def detect_video(video_path, source="video"):
+    cap = cv2.VideoCapture(str(video_path))
+    if not cap.isOpened():
+        raise VideoDecodeError("Could not open the video file.")
 
-    vest_model = get_model()
-    h_model = get_helmet_model()
+    fps = cap.get(cv2.CAP_PROP_FPS)
+    if not 0 < fps < 240:  # webm from MediaRecorder often reports 0 or 1000
+        fps = FALLBACK_FPS
 
-    cap = cv2.VideoCapture(video_path)
-
-    total_violations = 0
-    helmet_violations = 0
-    vest_violations = 0
-
+    version = model_version()
+    counts = {"no_helmet": 0, "no_vest": 0}
+    # Cooldown is measured in video time, so results don't depend on how fast
+    # the server processes frames.
+    last_saved_at = {"no_helmet": float("-inf"), "no_vest": float("-inf")}
     frame_number = 0
+    events = []  # one entry per saved violation, with its position in the video
 
-    last_save = {
-        "helmet": 0,
-        "vest": 0
-    }
+    try:
+        while True:
+            success, frame = cap.read()
+            if not success:
+                break
+            frame_number += 1
 
-    while True:
+            pos_ms = cap.get(cv2.CAP_PROP_POS_MSEC)
+            video_time = pos_ms / 1000.0 if pos_ms > 0 else (frame_number - 1) / fps
 
-        success, frame = cap.read()
+            _, _, violations = analyze_frame(frame)
+            best = {}
+            for vtype, conf in violations:
+                best[vtype] = max(conf, best.get(vtype, 0.0))
 
-        if not success:
-            break
+            for vtype, conf in best.items():
+                if video_time - last_saved_at[vtype] >= settings.video_cooldown_seconds:
+                    save_violation(frame, vtype, conf, source, version)
+                    counts[vtype] += 1
+                    events.append({"type": vtype, "time": round(video_time, 2), "confidence": round(conf, 3)})
+                    last_saved_at[vtype] = video_time
+    finally:
+        cap.release()
 
-        frame_number += 1
-
-        vest_results = vest_model.predict(frame, conf=0.25, verbose=False)
-        helmet_results = h_model.predict(frame, conf=0.25, verbose=False)
-
-        current_time = time.time()
-
-        no_helmet_boxes = []
-        no_vest_boxes = []
-
-        if helmet_results and helmet_results[0].boxes is not None:
-            for box in helmet_results[0].boxes:
-                cls_id = int(box.cls[0])
-                conf = float(box.conf[0])
-                if cls_id == V1_NO_HARDHAT_CLS:
-                    no_helmet_boxes.append(conf)
-
-        if vest_results and vest_results[0].boxes is not None:
-            for box in vest_results[0].boxes:
-                cls_id = int(box.cls[0])
-                conf = float(box.conf[0])
-                if cls_id == NO_VEST_CLS:
-                    no_vest_boxes.append(conf)
-
-        for conf in no_helmet_boxes:
-            if current_time - last_save["helmet"] > COOLDOWN_SECONDS:
-                helmet_violations += 1
-                total_violations += 1
-                save_violation(
-                    frame,
-                    Path(video_path).name,
-                    frame_number,
-                    "Helmet Missing",
-                    "High",
-                    conf
-                )
-                last_save["helmet"] = current_time
-
-        for conf in no_vest_boxes:
-            if current_time - last_save["vest"] > COOLDOWN_SECONDS:
-                vest_violations += 1
-                total_violations += 1
-                save_violation(
-                    frame,
-                    Path(video_path).name,
-                    frame_number,
-                    "Safety Vest Missing",
-                    "Medium",
-                    conf
-                )
-                last_save["vest"] = current_time
-
-    cap.release()
+    if frame_number == 0:
+        raise VideoDecodeError("No frames could be decoded from the video.")
 
     return {
-        "filename": Path(video_path).name,
         "status": "processed",
         "message": "Video analyzed successfully",
-        "total_violations": total_violations,
-        "helmet_violations": helmet_violations,
-        "vest_violations": vest_violations
+        "frames_processed": frame_number,
+        "total_violations": counts["no_helmet"] + counts["no_vest"],
+        "helmet_violations": counts["no_helmet"],
+        "vest_violations": counts["no_vest"],
+        "duration_seconds": round(frame_number / fps, 2),
+        "events": events,
     }

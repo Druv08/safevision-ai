@@ -1,79 +1,100 @@
 """
-main.py
--------
-SafeVision AI - FastAPI backend starter.
+SafeVision AI - FastAPI backend.
 
 Run from inside the backend/ folder:
 
     python -m uvicorn main:app --reload
 
-Then open:
-
-    http://127.0.0.1:8000
-    http://127.0.0.1:8000/docs
+Every route except /health requires a Supabase access token
+(Authorization: Bearer <token>). /docs and /redoc are disabled when ENV=production.
 """
 
-from pathlib import Path
+import logging
+import shutil
+from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
+from fastapi.responses import JSONResponse
 
-# Import detection router
+from auth import require_viewer
+from config import settings  # raises a clear RuntimeError if Supabase env vars are missing
 from routes.detection import router as detection_router
+from routes.evidence import router as evidence_router
+from services.model_service import ModelUnavailableError, model_status
+from supabase_client import get_supabase
 
-# Create FastAPI app
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+log = logging.getLogger("safevision")
+
+MIN_FREE_DISK_MB = 500
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    status = model_status()  # warm the models so the first request doesn't pay for it
+    if status["loaded"]:
+        log.info("Models loaded: %s", status["version"])
+    else:
+        log.warning("Models NOT loaded, detection endpoints will return 503: %s", status["error"])
+    yield
+
+
+docs_enabled = not settings.is_production
 app = FastAPI(
     title="SafeVision AI Backend",
-    version="1.0.0"
+    version="1.1.0",
+    lifespan=lifespan,
+    docs_url="/docs" if docs_enabled else None,
+    redoc_url="/redoc" if docs_enabled else None,
+    openapi_url="/openapi.json" if docs_enabled else None,
 )
 
-# CORS Configuration
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:5173",
-    ],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=settings.cors_origins,
+    allow_credentials=False,  # auth is a Bearer header, not cookies
+    allow_methods=["GET", "POST", "PATCH", "DELETE"],
+    allow_headers=["Authorization", "Content-Type"],
 )
 
-# Register routes
 app.include_router(detection_router)
-
-# -----------------------------
-# Screenshots Static Folder
-# -----------------------------
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-
-SCREENSHOT_DIR = (
-    PROJECT_ROOT
-    / "ai-model"
-    / "outputs"
-    / "violations"
-    / "screenshots"
-)
-
-app.mount(
-    "/screenshots",
-    StaticFiles(directory=str(SCREENSHOT_DIR)),
-    name="screenshots"
-)
+app.include_router(evidence_router)
 
 
-@app.get("/")
+@app.exception_handler(ModelUnavailableError)
+async def model_unavailable_handler(request: Request, exc: ModelUnavailableError):
+    return JSONResponse(status_code=503, content={"detail": f"Detection model unavailable: {exc}"})
+
+
+@app.get("/", dependencies=[Depends(require_viewer)])
 def root():
-    return {
-        "message": "SafeVision AI backend is running",
-        "status": "success",
-    }
+    return {"message": "SafeVision AI backend is running", "status": "success"}
 
 
 @app.get("/health")
 def health():
+    model = model_status()
+
+    if settings.db_disabled:
+        database = {"connected": True, "mode": "local"}
+    else:
+        try:
+            get_supabase().table("violations").select("id").limit(1).execute()
+            database = {"connected": True}
+        except Exception as e:
+            log.warning("Supabase health check failed: %s", e)
+            database = {"connected": False, "error": type(e).__name__}
+
+    settings.upload_dir.mkdir(parents=True, exist_ok=True)
+    free_mb = shutil.disk_usage(settings.upload_dir).free // (1024 * 1024)
+    disk = {"free_mb": free_mb, "ok": free_mb >= MIN_FREE_DISK_MB}
+
+    healthy = model["loaded"] and (database["connected"] or settings.db_disabled) and disk["ok"]
     return {
+        "status": "ok" if healthy else "degraded",
         "backend": "active",
-        "ai_model": "connected",
-        "database": "not connected yet",
+        "model": model,
+        "database": database,
+        "disk": disk,
     }
