@@ -6,25 +6,16 @@ fails with a clear message when the required Supabase variables are missing.
 """
 
 import os
+import re
 from dataclasses import dataclass
+from datetime import time
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
-from dotenv import load_dotenv
-
-BACKEND_DIR = Path(__file__).resolve().parent
-PROJECT_ROOT = BACKEND_DIR.parent
-RUNS_DIR = PROJECT_ROOT / "ai-model" / "outputs" / "training-runs"
-
-load_dotenv(BACKEND_DIR / ".env")
+import weights  # loads backend/.env; shared weights defaults
+from weights import BACKEND_DIR, PROJECT_ROOT  # noqa: F401  (re-exported for other modules)
 
 REQUIRED = ("SUPABASE_URL", "SUPABASE_SERVICE_ROLE_KEY")
-
-# Trained PPE (vest) weights, newest first. Only used when PPE_MODEL_PATH is unset.
-# Never includes the COCO yolov8n.pt weights: those have no PPE classes.
-PPE_MODEL_CANDIDATES = [
-    RUNS_DIR / "safevision_yolov8n_5class_v5d_50epochs" / "weights" / "best.pt",
-    RUNS_DIR / "safevision_yolov8n_5class_v2" / "weights" / "best.pt",
-]
 
 
 def _path(name: str, default: Path) -> Path:
@@ -49,7 +40,22 @@ class Settings:
     signed_url_ttl_seconds: int
     ppe_confidence: float
     person_confidence: float
-    video_cooldown_seconds: float
+    violation_window_seconds: float
+    violation_clear_seconds: float
+    tracker: str
+    camera_secret_key: str
+    stream_allowed_schemes: tuple[str, ...]
+    stream_default_fps: float
+    stream_autostart: bool
+    site_timezone: ZoneInfo
+    shifts: tuple[tuple[str, time, time], ...]
+    app_base_url: str
+    alert_sources: tuple[str, ...]
+    privacy_blur: bool
+    evidence_secret_key: str
+    original_retention_hours: float
+    retention_days: float
+    retention_interval_minutes: float
     ppe_model_path: Path
     ppe_model_sha256: str
     helmet_model_path: Path
@@ -61,6 +67,18 @@ class Settings:
     @property
     def is_production(self) -> bool:
         return self.env == "production"
+
+
+def parse_shifts(spec: str) -> tuple[tuple[str, time, time], ...]:
+    """"Morning=06:00-14:00,Night=22:00-06:00" -> ((name, start, end), ...). A shift may wrap past midnight."""
+    shifts = []
+    for part in filter(None, (x.strip() for x in spec.split(","))):
+        m = re.fullmatch(r"([^=]{1,40})=(\d{1,2}):(\d{2})-(\d{1,2}):(\d{2})", part)
+        if not m:
+            raise RuntimeError(f"SHIFTS: cannot read {part!r}; expected Name=HH:MM-HH:MM")
+        name, h1, m1, h2, m2 = m.groups()
+        shifts.append((name.strip(), time(int(h1), int(m1)), time(int(h2), int(m2))))
+    return tuple(shifts)
 
 
 def load_settings() -> Settings:
@@ -80,8 +98,6 @@ def load_settings() -> Settings:
             "from Supabase -> Project Settings -> API (see supabase/README.md)."
         )
 
-    default_ppe = next((p for p in PPE_MODEL_CANDIDATES if p.exists()), PPE_MODEL_CANDIDATES[0])
-
     return Settings(
         env=env,
         auth_disabled=auth_disabled,
@@ -99,14 +115,29 @@ def load_settings() -> Settings:
         signed_url_ttl_seconds=int(os.getenv("SIGNED_URL_TTL_SECONDS", "300")),
         ppe_confidence=float(os.getenv("PPE_CONFIDENCE", "0.4")),
         person_confidence=float(os.getenv("PERSON_CONFIDENCE", "0.4")),
-        video_cooldown_seconds=float(os.getenv("VIDEO_COOLDOWN_SECONDS", "5")),
-        ppe_model_path=_path("PPE_MODEL_PATH", default_ppe),
-        ppe_model_sha256=os.getenv("PPE_MODEL_SHA256", "").strip().lower(),
-        helmet_model_path=_path(
-            "HELMET_MODEL_PATH", RUNS_DIR / "safevision_yolov8n_v1" / "weights" / "best.pt"
+        violation_window_seconds=float(os.getenv("VIOLATION_WINDOW_SECONDS", "2")),
+        violation_clear_seconds=float(os.getenv("VIOLATION_CLEAR_SECONDS", "1")),
+        tracker=os.getenv("TRACKER", "bytetrack").lower(),
+        camera_secret_key=os.getenv("CAMERA_SECRET_KEY", "").strip(),
+        stream_allowed_schemes=tuple(
+            x.strip().lower() for x in os.getenv("STREAM_ALLOWED_SCHEMES", "rtsp,rtsps").split(",") if x.strip()
         ),
+        stream_default_fps=float(os.getenv("STREAM_SAMPLE_FPS", "5")),
+        stream_autostart=os.getenv("STREAM_AUTOSTART", "true").lower() == "true",
+        site_timezone=ZoneInfo(os.getenv("SITE_TIMEZONE", "Asia/Kolkata")),
+        shifts=parse_shifts(os.getenv("SHIFTS", "A=06:00-14:00,B=14:00-22:00,C=22:00-06:00")),
+        app_base_url=os.getenv("APP_BASE_URL", "http://localhost:5173").rstrip("/"),
+        alert_sources=tuple(x.strip() for x in os.getenv("ALERT_SOURCES", "camera").split(",") if x.strip()),
+        privacy_blur=os.getenv("PRIVACY_BLUR", "true").lower() == "true",
+        evidence_secret_key=os.getenv("EVIDENCE_SECRET_KEY", "").strip(),
+        original_retention_hours=float(os.getenv("ORIGINAL_RETENTION_HOURS", "72")),
+        retention_days=float(os.getenv("RETENTION_DAYS", "30")),
+        retention_interval_minutes=float(os.getenv("RETENTION_INTERVAL_MINUTES", "60")),
+        ppe_model_path=weights.resolve("PPE_MODEL_PATH"),
+        ppe_model_sha256=os.getenv("PPE_MODEL_SHA256", "").strip().lower(),
+        helmet_model_path=weights.resolve("HELMET_MODEL_PATH"),
         helmet_model_sha256=os.getenv("HELMET_MODEL_SHA256", "").strip().lower(),
-        person_model_path=_path("PERSON_MODEL_PATH", PROJECT_ROOT / "yolov8n.pt"),
+        person_model_path=weights.resolve("PERSON_MODEL_PATH"),
         person_model_sha256=os.getenv("PERSON_MODEL_SHA256", "").strip().lower(),
         upload_dir=_path("UPLOAD_DIR", BACKEND_DIR / "uploads"),
     )

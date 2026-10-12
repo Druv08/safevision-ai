@@ -12,14 +12,20 @@ def _bucket():
     return get_supabase().storage.from_(settings.supabase_bucket)
 
 
-def upload_screenshot(jpeg_bytes: bytes) -> str:
-    """Upload a JPEG and return its server-generated object key."""
-    key = f"{datetime.now(timezone.utc):%Y/%m/%d}/{uuid.uuid4().hex}.jpg"
+def upload_screenshot(data: bytes, *, prefix: str = "", ext: str = "jpg", content_type: str = "image/jpeg") -> str:
+    """Upload one object and return its server-generated key (a JPEG unless told otherwise)."""
+    key = f"{prefix}{datetime.now(timezone.utc):%Y/%m/%d}/{uuid.uuid4().hex}.{ext}"
     if settings.db_disabled:
-        local_store.save_screenshot(key, jpeg_bytes)
+        local_store.save_screenshot(key, data)
     else:
-        _bucket().upload(key, jpeg_bytes, {"content-type": "image/jpeg"})
+        _bucket().upload(key, data, {"content-type": content_type})
     return key
+
+
+def download(key: str) -> bytes:
+    if settings.db_disabled:
+        return local_store.read_screenshot(key)
+    return _bucket().download(key)
 
 
 def create_signed_url(key: str) -> str:

@@ -19,14 +19,27 @@ Pick start weights:
 Resume:
     python ai-model/training/train_safevision_v5.py --fast --resume
 
+Reproducibility: training uses a fixed seed (--seed, default 42) with
+Ultralytics' deterministic mode. After training, best.pt is validated on the
+val split (and the test split if data.yaml has one) and everything needed to
+compare runs is written to <run_dir>/metrics.json.
+
+Train on a camera-level split (see split_by_camera.py) with --data <split>/data.yaml.
+
 Output: ai-model/outputs/training-runs/<run_name>/weights/best.pt
-Then run the demo with:  --model "<...>/best.pt"
+        ai-model/outputs/training-runs/<run_name>/metrics.json
+Then run the demo with:  --helmet-model "<...>/best.pt"
 """
 
 import argparse
+import json
+import subprocess
 import sys
 import time
+from datetime import datetime, timezone
 from pathlib import Path
+
+from evaluate import evaluate_detector
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = SCRIPT_DIR.parent.parent
@@ -42,6 +55,7 @@ V5D_BEST = OUTPUT_DIR / "safevision_yolov8n_5class_v5d_50epochs" / "weights" / "
 
 IMG_SIZE = 640
 BATCH_SIZE = 8
+DEFAULT_SEED = 42
 # Run names are suffixed per mode; the dataset tag ("" or "b") is inserted by
 # build_modes() so the balanced (v5b) runs never overwrite the v5 runs.
 def resolve_dataset(balanced: bool, v5c: bool, v5d: bool, v5e: bool = False):
@@ -104,6 +118,9 @@ def parse_args():
                    help="Custom epoch count (e.g. 50). Run folder is "
                         "named *_<N>epochs. Ignored if --smoke/--fast is set.")
     p.add_argument("--resume", action="store_true", help="Resume from last.pt.")
+    p.add_argument("--seed", type=int, default=DEFAULT_SEED, help=f"Random seed (default {DEFAULT_SEED}).")
+    p.add_argument("--data", type=Path, default=None,
+                   help="Use this data.yaml instead of the --v5* dataset (e.g. a split_by_camera.py output).")
     return p.parse_args()
 
 
@@ -120,6 +137,8 @@ def pick_device():
 def main():
     args = parse_args()
     DATA_YAML, tag = resolve_dataset(args.balanced, args.v5c, args.v5d, args.v5e)
+    if args.data:
+        DATA_YAML = args.data.resolve()
     epochs, run_name = resolve_epochs_and_name(args, tag)
     mode = "smoke" if args.smoke else ("fast" if args.fast else "custom")
     run_dir = OUTPUT_DIR / run_name
@@ -154,7 +173,7 @@ def main():
     print(f"Dataset path   : {DATA_YAML}")
     print(f"Training mode  : {mode.upper()}{' (RESUME)' if args.resume else ''}")
     print(f"Epochs (target): {epochs}")
-    print(f"Image size     : {IMG_SIZE}   Batch: {BATCH_SIZE}   Device: {device}")
+    print(f"Image size     : {IMG_SIZE}   Batch: {BATCH_SIZE}   Device: {device}   Seed: {args.seed}")
     print(f"Base model     : {base_model if not args.resume else last_pt}")
     print(f"Output folder  : {run_dir}")
     print("=" * 70)
@@ -175,6 +194,7 @@ def main():
         return 1
 
     start = time.time()
+    started_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
     try:
         if args.resume:
             print(f"\nResuming from: {last_pt}\n")
@@ -184,7 +204,7 @@ def main():
             YOLO(base_model).train(
                 data=str(DATA_YAML), epochs=epochs, imgsz=IMG_SIZE,
                 batch=BATCH_SIZE, device=device, project=str(OUTPUT_DIR),
-                name=run_name, exist_ok=True,
+                name=run_name, exist_ok=True, seed=args.seed, deterministic=True,
             )
     except KeyboardInterrupt:
         print("\n[ABORT] Interrupted. Resume with the SAME flags plus --resume, e.g.:")
@@ -195,13 +215,58 @@ def main():
         return 1
 
     best_pt = run_dir / "weights" / "best.pt"
+    if best_pt.is_file():
+        write_metrics(run_dir, best_pt, DATA_YAML, args, base_model, epochs, device, started_at, time.time() - start)
     print("\n" + "=" * 70)
     print(f"Done in {(time.time()-start)/60:.1f} min")
     print(f"best.pt : {best_pt}  (exists: {best_pt.is_file()})")
     print("Run the demo on the new model:")
-    print(f'  .\\venv\\Scripts\\python.exe ai-model\\inference\\video_detection.py --conf 0.4 --pose-conf 0.6 --model "{best_pt}"')
+    print(f'  python ai-model/inference/video_detection.py --helmet-model "{best_pt}" --model "{best_pt}"')
     print("=" * 70)
     return 0
+
+
+def _git_commit() -> str | None:
+    try:
+        out = subprocess.run(["git", "rev-parse", "HEAD"], cwd=PROJECT_ROOT, capture_output=True, text=True)
+        return out.stdout.strip() or None
+    except OSError:
+        return None
+
+
+def write_metrics(run_dir, best_pt, data_yaml, args, base_model, epochs, device, started_at, seconds) -> None:
+    """Validate best.pt and save <run_dir>/metrics.json (one file per run)."""
+    import ultralytics
+    import yaml
+
+    splits = ["val"] + (["test"] if "test" in yaml.safe_load(Path(data_yaml).read_text(encoding="utf-8")) else [])
+    results = {}
+    for split in splits:
+        try:
+            results[split] = evaluate_detector(str(best_pt), str(data_yaml), split, IMG_SIZE)
+        except Exception as exc:  # e.g. empty split: keep the run's other metadata
+            results[split] = {"error": f"{type(exc).__name__}: {exc}"}
+    metrics = {
+        "run": run_dir.name,
+        "weights": str(best_pt),
+        "data": str(data_yaml),
+        "base_model": str(base_model),
+        "resumed": args.resume,
+        "epochs": epochs,
+        "imgsz": IMG_SIZE,
+        "batch": BATCH_SIZE,
+        "seed": args.seed,
+        "deterministic": True,
+        "device": device,
+        "ultralytics": ultralytics.__version__,
+        "git_commit": _git_commit(),
+        "started_at": started_at,
+        "train_seconds": round(seconds, 1),
+        "metrics": results,
+    }
+    out = run_dir / "metrics.json"
+    out.write_text(json.dumps(metrics, indent=2), encoding="utf-8")
+    print(f"metrics : {out}")
 
 
 if __name__ == "__main__":

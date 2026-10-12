@@ -56,3 +56,19 @@ def test_migrates_both_formats_and_is_idempotent(tmp_path, sb):
     again = migrate(csv_path, screenshots_dir=shots)
     assert again["imported"] == 0 and again["skipped_existing"] == 5
     assert len(sb.tables["violations"]) == 5
+
+
+def test_migrates_episode_csv_from_the_cli(tmp_path, sb):
+    make_jpeg(tmp_path / "e.jpg")
+    csv_path = tmp_path / "violation_episodes.csv"
+    csv_path.write_text(
+        "violation_id,timestamp,source,track_id,violation_type,severity,confidence,start_s,end_s,duration_s,"
+        "screenshot_path\n"
+        f"ep1,2026-10-12T09:15:02,site.mp4,7,Helmet Missing,High,0.812,3.40,9.10,5.70,{tmp_path / 'e.jpg'}\n",
+        encoding="utf-8",
+    )
+    assert migrate(csv_path)["imported"] == 1
+    row = sb.tables["violations"][0]
+    assert (row["type"], row["source"], row["track_id"]) == ("no_helmet", "video", 7)
+    assert (row["episode_start_s"], row["episode_end_s"]) == (3.4, 9.1)
+    assert row["screenshot_path"] in sb.objects

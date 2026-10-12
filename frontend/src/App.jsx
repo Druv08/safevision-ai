@@ -12,6 +12,9 @@ const Dashboard = lazy(() => import("./pages/Dashboard"));
 const ImageDetection = lazy(() => import("./pages/ImageDetection"));
 const VideoDetection = lazy(() => import("./pages/VideoDetection"));
 const LiveMonitoring = lazy(() => import("./pages/LiveMonitoring"));
+const Cameras = lazy(() => import("./pages/Cameras"));
+const Zones = lazy(() => import("./pages/Zones"));
+const Alerts = lazy(() => import("./pages/Alerts"));
 const Violations = lazy(() => import("./pages/Violations"));
 const About = lazy(() => import("./pages/About"));
 
@@ -27,6 +30,9 @@ function App() {
           <Route path="/image-detection" element={<ImageDetection />} />
           <Route path="/video-detection" element={<VideoDetection />} />
           <Route path="/live" element={<LiveMonitoring />} />
+          <Route path="/cameras" element={<Cameras />} />
+          <Route path="/cameras/:id/zones" element={<Zones />} />
+          <Route path="/alerts" element={<Alerts />} />
           <Route path="/violations" element={<Violations />} />
           <Route path="/about" element={<About />} />
         </Route>

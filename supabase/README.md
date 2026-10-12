@@ -9,7 +9,7 @@ audit log), Storage (screenshots) and Auth (login).
 |---|---|---|
 | `profiles` | One row per user: `full_name`, `role` (`admin` or `viewer`). Created automatically by a trigger when a user signs up, always as `viewer`. | A user can read only their own row. Nobody can write. |
 | `violations` | One row per logged violation. `screenshot_path` is an object key in the screenshots bucket, never a URL or a server path. | Any logged-in user can read. Only admins can update or delete. |
-| `audit_log` | Append-only record of evidence views, exports, deletes and status changes. | Only admins can read. Nobody but the service role can update or delete (RLS + a trigger). |
+| `audit_log` | Append-only record of evidence views, exports, deletes and status changes. | Only admins can read. Nobody can update, delete or truncate it, the service role included (trigger, from 0004). |
 | Storage bucket `violation-screenshots` | Private bucket, JPEG only, 5 MB per file. | No policies, so no direct access. Screenshots are shown through signed URLs that the backend creates and that expire after `SIGNED_URL_TTL_SECONDS` (default 5 minutes). |
 
 Row Level Security is enabled on all three tables. The backend uses the
@@ -21,7 +21,10 @@ checks (`backend/auth.py`).
 Either:
 
 - **Dashboard:** open SQL Editor, paste the contents of
-  `migrations/0001_init.sql`, and run it once.
+  `migrations/0001_init.sql`, run it once, then do the same with
+  `migrations/0002_episodes_observations.sql`, then
+  `migrations/0003_cameras_zones.sql`, then
+  `migrations/0004_privacy_alerts_evidence.sql`.
 - **CLI:** from the repository root,
   ```bash
   supabase link --project-ref <your-project-ref>
@@ -29,6 +32,21 @@ Either:
   ```
 
 Running it a second time fails (the tables already exist); that is expected.
+
+`0002` adds `track_id`, `episode_start_s` and `episode_end_s` to `violations`
+(one row is one person's violation episode) and an `observations` table
+(compliant and violating people, for the compliance rate; read-only for
+logged-in users). The backend needs it: image and video detection fail to save without it.
+
+`0004` adds the review workflow (`action_taken`, `cause`), evidence columns
+(`screenshot_sha256`, the encrypted original's key, hash and expiry, legal
+hold, `screenshot_deleted_at`), the `alert_recipients` and `alerts` tables
+(RLS on, no policies: API only, since they hold phone numbers), allows
+`application/octet-stream` in the bucket for encrypted originals, and makes
+`audit_log` append-only for **every** role: 0001 still let the service role
+update and delete rows; after 0004 the trigger refuses updates, deletes and
+truncates from anyone. Without 0004, saving a violation fails (unknown
+columns) and the retention job logs errors.
 
 ## 2. Turn off public sign-ups
 

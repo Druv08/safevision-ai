@@ -31,7 +31,7 @@ const STEPS = [
 
 const FAQ = [
   ["Which PPE does SafeVisionAI detect?", "Hard hats (including whether they are actually worn on the head) and high-visibility vests. Gloves, goggles, boots and harnesses are not detected by the current models."],
-  ["Does it work with CCTV or RTSP cameras?", "Not yet. Live monitoring works with any camera the browser can access, such as a webcam or a USB or capture-card feed. Direct RTSP/IP camera ingest is on the roadmap."],
+  ["Does it work with CCTV or RTSP cameras?", "Yes. Add RTSP cameras on the Cameras page; the server reads them continuously, reconnects when a stream drops, and applies per-zone rules (hard hat, vest, both, none, or no entry). The webcam page is a browser demo."],
   ["Where are images and violations stored?", "In your own Supabase project: violation records in Postgres with row-level security, and evidence screenshots in a private storage bucket, shown only through links that expire after a few minutes."],
   ["Who can change or delete records?", "There are two roles. Viewers can review and export. Admins can also acknowledge, close and delete violations. Every evidence view, export, status change and deletion is written to an append-only audit log."],
   ["How accurate is it?", "It depends on camera angle, distance, lighting and occlusion. Treat each violation as a lead to review, not a verdict. Every record keeps the frame it came from so a person can confirm it."],

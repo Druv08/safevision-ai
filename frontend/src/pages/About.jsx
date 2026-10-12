@@ -24,7 +24,7 @@ const STACK = [
 ];
 
 const LIMITS = [
-  "Network cameras (RTSP / IP) are not supported yet. Live monitoring uses a camera attached to the browser.",
+  "Network cameras are read over RTSP by the backend (5 analysed frames per second by default). The webcam page is a demo that sends frames from the browser.",
   "There are no automatic alerts or notifications. Violations are reviewed on the Violations page.",
   "Detection quality depends on camera angle, distance and lighting. Review each violation before acting on it.",
 ];

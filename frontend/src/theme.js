@@ -6,15 +6,47 @@ export const SEVERITY_TONE = { Critical: "tone-danger", High: "tone-danger", Med
 export const STATUS_META = {
   new:          { label: "Awaiting review", tone: "tone-warning" },
   acknowledged: { label: "Acknowledged",    tone: "tone-info" },
-  closed:       { label: "Closed",          tone: "tone-ok" },
+  action_taken: { label: "Action taken",    tone: "tone-ok" },
+  closed:       { label: "Closed",          tone: "tone-neutral" },
 };
 
-export const SOURCE_LABEL = { image: "Image upload", video: "Video upload", camera: "Live camera" };
+// Why it happened, chosen by the reviewer (backend CAUSES). "PPE not issued" is the site's gap, not the worker's.
+export const CAUSE_OPTIONS = [
+  { value: "ppe_not_issued",  label: "PPE not issued" },
+  { value: "ppe_not_worn",    label: "PPE issued, not worn" },
+  { value: "ppe_damaged",     label: "PPE damaged or unsuitable" },
+  { value: "false_detection", label: "False detection" },
+  { value: "other",           label: "Other" },
+];
+export const CAUSE_LABEL = Object.fromEntries(CAUSE_OPTIONS.map((c) => [c.value, c.label]));
+
+export const SOURCE_LABEL = { image: "Image upload", video: "Video upload", camera: "Camera" };
 
 export const TYPE_OPTIONS = [
   { value: "no_helmet", label: "Helmet missing" },
   { value: "no_vest",   label: "Safety vest missing" },
+  { value: "zone_intrusion", label: "Zone intrusion" },
 ];
+export const TYPE_LABEL = Object.fromEntries(TYPE_OPTIONS.map((t) => [t.value, t.label]));
+
+// Zone policies (backend/services/zones.py). `color` is a CSS token for the zone outline.
+export const POLICY_OPTIONS = [
+  { value: "both",     label: "Hard hat and vest", color: "var(--primary)" },
+  { value: "helmet",   label: "Hard hat only",     color: "var(--info)" },
+  { value: "vest",     label: "Vest only",         color: "var(--warning)" },
+  { value: "none",     label: "No PPE required",   color: "var(--muted)" },
+  { value: "no_entry", label: "No entry",          color: "var(--danger)" },
+];
+export const POLICY = Object.fromEntries(POLICY_OPTIONS.map((p) => [p.value, p]));
+
+// Stream worker states (backend/services/stream_service.py).
+export const CAMERA_STATE = {
+  running:      { label: "Streaming",    tone: "tone-ok" },
+  connecting:   { label: "Connecting",   tone: "tone-info" },
+  reconnecting: { label: "Reconnecting", tone: "tone-warning" },
+  error:        { label: "Error",        tone: "tone-danger" },
+  stopped:      { label: "Stopped",      tone: "tone-neutral" },
+};
 
 // Detection classes returned by /detect-image (`class_id`).
 export const DETECTION_CLASSES = {
@@ -33,6 +65,7 @@ export function chartTheme() {
   return {
     helmet: v("--danger"),
     vest: v("--warning"),
+    intrusion: v("--info"),
     primary: v("--primary"),
     info: v("--info"),
     grid: v("--line"),

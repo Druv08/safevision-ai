@@ -1,10 +1,13 @@
 """
 Import a legacy violations CSV and its screenshots into Supabase.
 
-Handles both formats that older versions wrote (they may be mixed in one file):
+Handles every format the project has written (they may be mixed in one file):
   * backend:  8 columns, no header
       violation_id,timestamp,source,frame_number,violation_type,severity,confidence,screenshot_path
-  * CLI:      9 columns with a header (adds worker_detected before screenshot_path)
+  * old CLI:  9 columns with a header (adds worker_detected before screenshot_path)
+  * episodes: 11 columns with a header, from ai-model/inference/violation_detection.py
+      violation_id,timestamp,source,track_id,violation_type,severity,confidence,start_s,end_s,duration_s,
+      screenshot_path
 
 Re-running is safe: rows already imported (matched by legacy id in `note`) are skipped.
 
@@ -35,6 +38,11 @@ BACKEND_COLUMNS = [
     "violation_type", "severity", "confidence", "screenshot_path",
 ]
 CLI_COLUMNS = BACKEND_COLUMNS[:7] + ["worker_detected", "screenshot_path"]
+EPISODE_COLUMNS = [
+    "violation_id", "timestamp", "source", "track_id", "violation_type", "severity",
+    "confidence", "start_s", "end_s", "duration_s", "screenshot_path",
+]
+FORMATS = {len(c): c for c in (BACKEND_COLUMNS, CLI_COLUMNS, EPISODE_COLUMNS)}
 
 LABEL_TO_TYPES = {
     "Helmet Missing": ["no_helmet"],
@@ -51,12 +59,11 @@ def read_rows(csv_path: Path):
         for line_no, cells in enumerate(csv.reader(f), start=1):
             if not cells or cells[0] == "violation_id":  # blank line or a header row
                 continue
-            if len(cells) == len(CLI_COLUMNS):
-                yield line_no, dict(zip(CLI_COLUMNS, cells, strict=True))
-            elif len(cells) == len(BACKEND_COLUMNS):
-                yield line_no, dict(zip(BACKEND_COLUMNS, cells, strict=True))
+            columns = FORMATS.get(len(cells))
+            if columns:
+                yield line_no, dict(zip(columns, cells, strict=True))
             else:
-                log.warning("line %d: %d columns, expected 8 or 9; skipped", line_no, len(cells))
+                log.warning("line %d: %d columns, expected 8, 9 or 11; skipped", line_no, len(cells))
 
 
 def parse_timestamp(value: str) -> datetime:
@@ -110,6 +117,11 @@ def migrate(csv_path: Path, screenshots_dir: Path | None = None, dry_run: bool =
             vtypes = LABEL_TO_TYPES[row["violation_type"]]
             created_at = parse_timestamp(row["timestamp"])
             confidence = float(row["confidence"])
+            episode = {
+                "track_id": int(row["track_id"]) if row.get("track_id") not in (None, "", "None") else None,
+                "episode_start_s": float(row["start_s"]) if "start_s" in row else None,
+                "episode_end_s": float(row["end_s"]) if "end_s" in row else None,
+            }
         except (KeyError, ValueError) as e:
             log.warning("line %d: invalid row (%s); skipped", line_no, e)
             stats["skipped_invalid"] += 1
@@ -130,7 +142,9 @@ def migrate(csv_path: Path, screenshots_dir: Path | None = None, dry_run: bool =
                 continue
             # Each row gets its own object, so deleting one never breaks another.
             key = storage_service.upload_screenshot(jpeg_bytes(shot)) if shot else None
-            create_violation(vtype, confidence, source_kind(row["source"]), key, MODEL_VERSION, created_at, note)
+            create_violation(
+                vtype, confidence, source_kind(row["source"]), key, MODEL_VERSION, created_at, note, **episode
+            )
             done.add(note)
             stats["imported"] += 1
 

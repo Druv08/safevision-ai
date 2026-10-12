@@ -17,6 +17,7 @@ from services.detection_service import detect_image
 from services.model_service import model_status
 from services.video_detection_service import VideoDecodeError, detect_video
 from services.violations_service import (
+    compliance_stats,
     count_by_type,
     list_violations,
     log_audit,
@@ -140,19 +141,22 @@ def detect_video_route(
 
 @router.get("/violations")
 def get_violations_route(
-    type: Literal["no_helmet", "no_vest"] | None = None,
+    type: Literal["no_helmet", "no_vest", "zone_intrusion"] | None = None,
     date_from: datetime | None = None,
     date_to: datetime | None = Query(None, description="Exclusive upper bound"),
     q: str | None = Query(None, max_length=100),
     page: int = Query(1, ge=1),
     page_size: int = Query(50, ge=1, le=500),
-    status: Literal["new", "acknowledged", "closed"] | None = None,
+    status: Literal["new", "acknowledged", "action_taken", "closed"] | None = None,
     source: Literal["image", "video", "camera"] | None = None,
     sort: Literal["newest", "oldest"] = "newest",
+    camera_id: UUID | None = None,
+    zone_id: UUID | None = None,
     user: User = Depends(require_viewer),
 ):
     rows, total = list_violations(
-        type, date_from, date_to, q, page, page_size, status, source, oldest=sort == "oldest"
+        type, date_from, date_to, q, page, page_size, status, source, oldest=sort == "oldest",
+        camera_id=camera_id and str(camera_id), zone_id=zone_id and str(zone_id),
     )
     return {
         "count": total,
@@ -163,16 +167,21 @@ def get_violations_route(
 
 
 class StatusUpdate(BaseModel):
-    status: Literal["acknowledged", "closed"]
-    note: str | None = Field(None, max_length=1000)
+    status: Literal["acknowledged", "action_taken", "closed"]
+    note: str | None = Field(None, max_length=1000, description="Required for action_taken: what was done")
+    cause: Literal["ppe_not_issued", "ppe_not_worn", "ppe_damaged", "false_detection", "other"] | None = None
 
 
 @router.patch("/violations/{violation_id}")
 def update_violation_status(violation_id: UUID, body: StatusUpdate, user: User = Depends(require_admin)):
-    row = set_status(str(violation_id), body.status, user.id, body.note)
+    try:
+        row = set_status(str(violation_id), body.status, user.id, body.note, body.cause)
+    except ValueError as e:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(e)) from None
     if row is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Violation not found")
-    log_audit(user.id, body.status, str(violation_id))
+    # The note is overwritten by the next change, so the trail keeps every version.
+    log_audit(user.id, body.status, str(violation_id), {"note": body.note, "cause": body.cause})
     return to_api(row)
 
 
@@ -183,5 +192,8 @@ def dashboard_stats(user: User = Depends(require_viewer)):
         "total_violations": sum(counts.values()),
         "no_vest_cases": counts["no_vest"],
         "no_helmet_cases": counts["no_helmet"],
+        "zone_intrusion_cases": counts["zone_intrusion"],
         "system_status": "Active" if model_status()["loaded"] else "Model unavailable",
+        # Per item: compliant / violation / unknown people and rate = compliant / (compliant + violation)
+        "compliance": compliance_stats(),
     }

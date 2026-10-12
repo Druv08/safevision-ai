@@ -22,7 +22,7 @@ const MODES = [
 const STATUS = {
   idle:       { tone: "tone-neutral", label: "Offline" },
   connecting: { tone: "tone-info",    label: "Connecting" },
-  live:       { tone: "tone-ok",      label: "Live" },
+  live:       { tone: "tone-ok",      label: "Demo running" },
   error:      { tone: "tone-danger",  label: "Disconnected" },
 };
 const cameraSupported = typeof navigator !== "undefined" && !!navigator.mediaDevices?.getUserMedia;
@@ -196,14 +196,14 @@ function LiveMonitoring() {
   return (
     <div>
       <PageHeader
-        title="Live Monitoring"
-        description="Watch a camera connected to this device and check it for missing PPE in real time."
+        title="Webcam demo"
+        description="Demo mode: sends frames or short clips from a camera attached to this browser for analysis. It is not continuous site monitoring; for that, add network cameras on the Cameras page."
         actions={
           live ? (
-            <button className="btn btn-danger" onClick={stop}><LuSquare /> Stop monitoring</button>
+            <button className="btn btn-danger" onClick={stop}><LuSquare /> Stop demo</button>
           ) : (
             <button className="btn btn-primary" onClick={start} disabled={!cameraSupported || status === "connecting"}>
-              {status === "connecting" ? <Spinner /> : <LuPlay />} {status === "error" ? "Reconnect" : "Start monitoring"}
+              {status === "connecting" ? <Spinner /> : <LuPlay />} {status === "error" ? "Reconnect" : "Start demo"}
             </button>
           )
         }
@@ -247,7 +247,7 @@ function LiveMonitoring() {
                     title={status === "error" ? (stats.since ? "Camera disconnected" : "Couldn't start the camera") : "Camera is off"}
                     action={
                       <button className="btn btn-primary" onClick={start}>
-                        <LuPlay /> {status === "error" ? "Reconnect" : "Start monitoring"}
+                        <LuPlay /> {status === "error" ? "Reconnect" : "Start demo"}
                       </button>
                     }
                   >
@@ -285,7 +285,7 @@ function LiveMonitoring() {
               {mode === "frames"
                 ? `A still frame is sent every ${FRAME_MS / 1000}s. If the previous frame is still being analyzed, the next one is skipped.`
                 : `The camera is recorded in ${CLIP_MS / 1000}s clips and each clip is analyzed frame by frame.`}
-              {live && " Stop monitoring to change the mode or camera."}
+              {live && " Stop the demo to change the mode or camera."}
             </p>
           </div>
         </section>
@@ -300,7 +300,7 @@ function LiveMonitoring() {
             />
             <fieldset disabled={live || status === "connecting"} className="space-y-1.5">
               <legend className="sr-only">Choose a camera</legend>
-              {devices.length === 0 && <p className="text-sm text-muted">No camera found yet. Start monitoring to grant access.</p>}
+              {devices.length === 0 && <p className="text-sm text-muted">No camera found yet. Start the demo to grant access.</p>}
               {devices.map((d, i) => {
                 const id = d.deviceId || `cam-${i}`;
                 const checked = (deviceId || devices[0].deviceId) === d.deviceId;
@@ -311,13 +311,13 @@ function LiveMonitoring() {
                   </label>
                 );
               })}
-              <div className="flex items-start gap-3 rounded-lg border border-dashed border-line px-3 py-2.5 text-sm opacity-70" aria-disabled="true">
+              <Link to="/cameras" className="flex items-start gap-3 rounded-lg border border-dashed border-line px-3 py-2.5 text-sm hover:bg-surface-2">
                 <LuNetwork className="mt-0.5 text-muted flex-shrink-0" aria-hidden="true" />
                 <div>
-                  <p className="font-medium">Network cameras (RTSP / IP)</p>
-                  <p className="text-xs text-muted mt-0.5">Not available. The backend has no stream ingest endpoint yet.</p>
+                  <p className="font-medium">Network cameras (RTSP)</p>
+                  <p className="text-xs text-muted mt-0.5">Analysed continuously on the server, with zones. Set them up on the Cameras page.</p>
                 </div>
-              </div>
+              </Link>
             </fieldset>
           </section>
 

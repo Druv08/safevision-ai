@@ -1,16 +1,27 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useLocation, useSearchParams } from "react-router-dom";
-import { LuDownload, LuSearch, LuX, LuInbox, LuChevronRight, LuImageOff, LuTrash2, LuCheck, LuCircleCheck } from "react-icons/lu";
-import API, { apiError } from "../services/api";
+import {
+  LuDownload, LuSearch, LuX, LuInbox, LuChevronRight, LuImageOff, LuTrash2, LuCheck, LuCircleCheck, LuWrench,
+  LuShieldCheck, LuFileArchive, LuEye, LuLock, LuLockOpen,
+} from "react-icons/lu";
+import API, { apiError, download } from "../services/api";
 import { useAuth } from "../context/AuthContext";
 import { useToast } from "../context/ToastContext";
-import { SOURCE_LABEL, STATUS_META, TYPE_OPTIONS } from "../theme";
+import { CAUSE_LABEL, CAUSE_OPTIONS, SOURCE_LABEL, STATUS_META, TYPE_OPTIONS } from "../theme";
 import {
   PageHeader, Alert, EmptyState, Pagination, SeverityBadge, StatusBadge, Dialog, ConfirmDialog, Spinner,
 } from "../components/ui";
 
 const PAGE_SIZE = 20;
-const FILTER_KEYS = ["type", "status", "source", "from", "to", "q"];
+const FILTER_KEYS = ["type", "status", "source", "from", "to", "q", "camera_id", "zone_id"];
+const INTEGRITY = {
+  ok: { tone: "tone-ok", text: "Matches the hash recorded at capture." },
+  mismatch: { tone: "tone-danger", text: "Does NOT match the hash recorded at capture: the file was changed." },
+  missing: { tone: "tone-danger", text: "The stored file is missing." },
+  no_hash_recorded: { tone: "tone-warning", text: "No hash was recorded (record made before hashing was added)." },
+  deleted_by_retention: { tone: "tone-neutral", text: "The screenshot was deleted by the retention policy." },
+  no_screenshot: { tone: "tone-neutral", text: "This record has no screenshot." },
+};
 
 // <input type="date"> gives a local calendar day; the API wants instants.
 const startOfDay = (d) => new Date(`${d}T00:00`).toISOString();
@@ -61,6 +72,8 @@ function Violations() {
     if (p("from")) q.date_from = startOfDay(p("from"));
     if (p("to")) q.date_to = startOfNextDay(p("to"));
     if (p("q")) q.q = p("q");
+    if (p("camera_id")) q.camera_id = p("camera_id");
+    if (p("zone_id")) q.zone_id = p("zone_id");
     return q;
   }, [params]); // eslint-disable-line react-hooks/exhaustive-deps
   const key = JSON.stringify(query);
@@ -90,19 +103,10 @@ function Violations() {
   const downloadCSV = async () => {
     setExporting(true);
     try {
-      const r = await API.get("/download-violations", { responseType: "blob" });
-      const url = URL.createObjectURL(r.data);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = `violations-${new Date().toISOString().slice(0, 10)}.csv`;
-      a.click();
-      URL.revokeObjectURL(url);
+      await download("/download-violations", `violations-${new Date().toISOString().slice(0, 10)}.csv`);
       toast("CSV export downloaded.");
     } catch (e) {
-      // Error bodies arrive as a Blob because of responseType.
-      let msg = apiError(e, "Export failed.");
-      try { msg = JSON.parse(await e.response.data.text()).detail || msg; } catch { /* not JSON */ }
-      toast(msg, "danger");
+      toast(e.message, "danger");
     } finally {
       setExporting(false);
     }
@@ -112,7 +116,7 @@ function Violations() {
     <div>
       <PageHeader
         title="Violations"
-        description="Every PPE violation with its evidence. Review, acknowledge and close incidents."
+        description="Every PPE presence detection record with its evidence. Review it, record the cause and the action taken, then close it."
         actions={
           <button onClick={downloadCSV} disabled={exporting} className="btn btn-secondary">
             {exporting ? <Spinner /> : <LuDownload />} Export CSV
@@ -154,6 +158,7 @@ function Violations() {
         <div className="flex flex-wrap items-center justify-between gap-2 mt-3 pt-3 border-t border-line">
           <p className="text-sm text-muted tabular-nums" aria-live="polite">
             {loading && !data ? "Loading…" : `${data?.count ?? 0} ${filtered ? "matching" : "total"} record${data?.count === 1 ? "" : "s"}`}
+            {(p("zone_id") || p("camera_id")) && <span className="badge tone-info ml-2">{p("zone_id") ? "One zone" : "One camera"}</span>}
           </p>
           <div className="flex items-center gap-2">
             {filtered && (
@@ -279,9 +284,16 @@ function ViolationDialog({ id, violation, isAdmin, onClose, onChanged }) {
   const [record, setRecord] = useState(violation);
   const [evidence, setEvidence] = useState({ state: "loading" });
   const [note, setNote] = useState("");
+  const [cause, setCause] = useState("");
   const [busy, setBusy] = useState("");
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [confirmOriginal, setConfirmOriginal] = useState(false);
+  const [original, setOriginal] = useState(""); // object URL of the unblurred original, once viewed
+  const [integrity, setIntegrity] = useState(null);
+  const [holdReason, setHoldReason] = useState(null); // null = closed, "" = editing
   const v = record || violation; // a later page refresh can supply the row
+
+  useEffect(() => () => { if (original) URL.revokeObjectURL(original); }, [original]);
 
   // Fetching evidence is audit-logged by the backend, so it happens once per opened record.
   useEffect(() => {
@@ -296,13 +308,70 @@ function ViolationDialog({ id, violation, isAdmin, onClose, onChanged }) {
   const setStatus = async (status) => {
     setBusy(status);
     try {
-      const r = await API.patch(`/violations/${id}`, { status, ...(note.trim() ? { note: note.trim() } : {}) });
+      const r = await API.patch(`/violations/${id}`, {
+        status, ...(note.trim() ? { note: note.trim() } : {}), ...(cause ? { cause } : {}),
+      });
       setRecord(r.data);
       setNote("");
-      toast(status === "closed" ? "Violation closed." : "Violation acknowledged.");
+      setCause("");
+      toast({ closed: "Record closed.", action_taken: "Action recorded.", acknowledged: "Record acknowledged." }[status]);
       onChanged();
     } catch (e) {
       toast(apiError(e, "Could not update the violation."), "danger");
+    } finally {
+      setBusy("");
+    }
+  };
+
+  const viewOriginal = async () => {
+    setBusy("original");
+    try {
+      const r = await API.get(`/violations/${id}/original`, { responseType: "blob" });
+      setOriginal(URL.createObjectURL(r.data));
+      setConfirmOriginal(false);
+    } catch (e) {
+      let msg = apiError(e, "Could not load the original.");
+      try { msg = JSON.parse(await e.response.data.text()).detail || msg; } catch { /* not JSON */ }
+      toast(msg, "danger");
+      setConfirmOriginal(false);
+    } finally {
+      setBusy("");
+    }
+  };
+
+  const verify = async () => {
+    setBusy("verify");
+    try {
+      setIntegrity((await API.get(`/violations/${id}/verify`)).data);
+    } catch (e) {
+      toast(apiError(e, "Could not check the hash."), "danger");
+    } finally {
+      setBusy("");
+    }
+  };
+
+  const exportZip = async () => {
+    setBusy("export");
+    try {
+      await download(`/violations/${id}/export`, `evidence-${id}.zip`);
+      toast("Evidence package downloaded. The export is in the audit log.");
+    } catch (e) {
+      toast(e.message, "danger");
+    } finally {
+      setBusy("");
+    }
+  };
+
+  const setHold = async (hold) => {
+    setBusy("hold");
+    try {
+      const r = await API.put(`/violations/${id}/legal-hold`, { hold, ...(hold ? { reason: holdReason.trim() } : {}) });
+      setRecord(r.data);
+      setHoldReason(null);
+      toast(hold ? "Legal hold placed: retention will not delete this evidence." : "Legal hold released.");
+      onChanged();
+    } catch (e) {
+      toast(apiError(e, "Could not change the legal hold."), "danger");
     } finally {
       setBusy("");
     }
@@ -329,7 +398,7 @@ function ViolationDialog({ id, violation, isAdmin, onClose, onChanged }) {
   return (
     <>
       <Dialog
-        open={open && !confirmDelete}
+        open={open && !confirmDelete && !confirmOriginal}
         onClose={onClose}
         width="44rem"
         title={v ? v.violation_type : "Violation"}
@@ -337,7 +406,8 @@ function ViolationDialog({ id, violation, isAdmin, onClose, onChanged }) {
         footer={
           v && isAdmin ? (
             <>
-              <button className="btn btn-danger mr-auto" onClick={() => setConfirmDelete(true)} disabled={!!busy}>
+              <button className="btn btn-danger mr-auto" onClick={() => setConfirmDelete(true)} disabled={!!busy || v.legal_hold}
+                data-tip={v.legal_hold ? "On legal hold: release it first" : undefined}>
                 <LuTrash2 /> Delete
               </button>
               {v.status === "new" && (
@@ -345,9 +415,15 @@ function ViolationDialog({ id, violation, isAdmin, onClose, onChanged }) {
                   {busy === "acknowledged" ? <Spinner /> : <LuCheck />} Acknowledge
                 </button>
               )}
+              {(v.status === "new" || v.status === "acknowledged") && (
+                <button className="btn btn-secondary" onClick={() => setStatus("action_taken")} disabled={!!busy || !note.trim()}
+                  data-tip={note.trim() ? undefined : "Describe the action in the note first"}>
+                  {busy === "action_taken" ? <Spinner /> : <LuWrench />} Action taken
+                </button>
+              )}
               {v.status !== "closed" && (
                 <button className="btn btn-primary" onClick={() => setStatus("closed")} disabled={!!busy}>
-                  {busy === "closed" ? <Spinner /> : <LuCircleCheck />} Close incident
+                  {busy === "closed" ? <Spinner /> : <LuCircleCheck />} Close
                 </button>
               )}
             </>
@@ -369,19 +445,32 @@ function ViolationDialog({ id, violation, isAdmin, onClose, onChanged }) {
                 <div className="p-4 w-full"><Alert>{evidence.message}</Alert></div>
               ) : (
                 <img
-                  src={evidence.url}
-                  alt={`Evidence frame for ${v.violation_type}`}
+                  src={original || evidence.url}
+                  alt={`${original ? "Unblurred original" : "Evidence frame"} for ${v.violation_type}`}
                   className="max-h-[50vh] w-auto"
                   onError={() => setEvidence({ state: "error", message: "The evidence link expired. Close and reopen this record." })}
                 />
               )}
             </div>
+            {v.screenshot_path && (
+              <div className="flex flex-wrap items-center gap-2 -mt-3 text-xs text-muted">
+                {original
+                  ? <span className="badge tone-warning"><LuEye /> Unblurred original (this view was logged)</span>
+                  : <span>People are blurred for privacy.</span>}
+                {isAdmin && v.has_original && !original && (
+                  <button className="btn btn-ghost btn-sm" onClick={() => setConfirmOriginal(true)} disabled={!!busy}>
+                    <LuEye /> View unblurred original
+                  </button>
+                )}
+              </div>
+            )}
 
             <dl className="grid grid-cols-2 sm:grid-cols-3 gap-x-4 gap-y-3 text-sm">
               <Field label="Severity"><SeverityBadge severity={v.severity} /></Field>
               <Field label="Status"><StatusBadge status={v.status} /></Field>
               <Field label="Confidence"><span className="tabular-nums">{(v.confidence * 100).toFixed(1)}%</span></Field>
               <Field label="Source">{SOURCE_LABEL[v.source] ?? v.source}</Field>
+              {v.cause && <Field label="Cause">{CAUSE_LABEL[v.cause] ?? v.cause}</Field>}
               <Field label="Model"><span className="font-mono text-xs break-all">{v.model_version || "—"}</span></Field>
               <Field label="Record ID"><span className="font-mono text-xs break-all">{v.id}</span></Field>
               {v.acknowledged_by && <Field label="Acknowledged by"><span className="font-mono text-xs break-all">{v.acknowledged_by}</span></Field>}
@@ -389,11 +478,66 @@ function ViolationDialog({ id, violation, isAdmin, onClose, onChanged }) {
               {v.note && <div className="col-span-full"><Field label="Note">{v.note}</Field></div>}
             </dl>
 
+            <div className="rounded-lg border border-line p-3 space-y-2 text-sm">
+              <div className="flex flex-wrap items-center gap-2">
+                <LuShieldCheck className="text-muted" aria-hidden="true" />
+                <span className="text-muted">SHA-256 at capture</span>
+                <span className="font-mono text-xs break-all" title={v.screenshot_sha256 || ""}>
+                  {v.screenshot_sha256 ? `${v.screenshot_sha256.slice(0, 16)}…` : "not recorded"}
+                </span>
+                <button className="btn btn-ghost btn-sm ml-auto" onClick={verify} disabled={!!busy}>
+                  {busy === "verify" ? <Spinner /> : <LuShieldCheck />} Verify
+                </button>
+                {isAdmin && (
+                  <button className="btn btn-ghost btn-sm" onClick={exportZip} disabled={!!busy}>
+                    {busy === "export" ? <Spinner /> : <LuFileArchive />} Export evidence
+                  </button>
+                )}
+              </div>
+              {integrity && (
+                <p className={`badge ${INTEGRITY[integrity.status]?.tone ?? "tone-neutral"}`}>
+                  <span className="dot" />{INTEGRITY[integrity.status]?.text ?? integrity.status}
+                </p>
+              )}
+              <div className="flex flex-wrap items-center gap-2 pt-1 border-t border-line">
+                {v.legal_hold ? <LuLock className="text-warning" aria-hidden="true" /> : <LuLockOpen className="text-muted" aria-hidden="true" />}
+                <span className={v.legal_hold ? "text-fg" : "text-muted"}>
+                  {v.legal_hold ? `Legal hold: ${v.legal_hold_reason || "no reason given"}` : "Not on legal hold: deleted by the retention policy when it expires."}
+                </span>
+                {isAdmin && (v.legal_hold ? (
+                  <button className="btn btn-ghost btn-sm ml-auto" onClick={() => setHold(false)} disabled={!!busy}>
+                    {busy === "hold" ? <Spinner /> : <LuLockOpen />} Release hold
+                  </button>
+                ) : holdReason === null && (
+                  <button className="btn btn-ghost btn-sm ml-auto" onClick={() => setHoldReason("")} disabled={!!busy}>
+                    <LuLock /> Place legal hold
+                  </button>
+                ))}
+              </div>
+              {holdReason !== null && !v.legal_hold && (
+                <div className="flex flex-wrap gap-2">
+                  <input className="input flex-1 min-w-48" maxLength={500} autoFocus value={holdReason} onChange={(e) => setHoldReason(e.target.value)}
+                    placeholder="Reason, e.g. insurance claim #42" aria-label="Legal hold reason" />
+                  <button className="btn btn-ghost btn-sm" onClick={() => setHoldReason(null)}>Cancel</button>
+                  <button className="btn btn-primary btn-sm" onClick={() => setHold(true)} disabled={!!busy || !holdReason.trim()}>Place hold</button>
+                </div>
+              )}
+            </div>
+
             {isAdmin && v.status !== "closed" && (
-              <label className="block">
-                <span className="label">Add a note (optional, saved with the status change)</span>
-                <textarea rows={2} maxLength={1000} value={note} onChange={(e) => setNote(e.target.value)} className="input" placeholder="e.g. Supervisor spoke with the crew at gate 3" />
-              </label>
+              <div className="grid grid-cols-1 sm:grid-cols-[1fr_14rem] gap-3">
+                <label className="block">
+                  <span className="label">Note (required for Action taken; saved with the status change)</span>
+                  <textarea rows={2} maxLength={1000} value={note} onChange={(e) => setNote(e.target.value)} className="input" placeholder="e.g. Store had no helmets in size L; issued one and briefed the crew" />
+                </label>
+                <label className="block">
+                  <span className="label">Cause</span>
+                  <select className="input" value={cause} onChange={(e) => setCause(e.target.value)}>
+                    <option value="">{v.cause ? `Keep: ${CAUSE_LABEL[v.cause]}` : "Not set"}</option>
+                    {CAUSE_OPTIONS.map((c) => <option key={c.value} value={c.value}>{c.label}</option>)}
+                  </select>
+                </label>
+              </div>
             )}
             {!isAdmin && <p className="text-xs text-muted">Read-only access. An admin can acknowledge, close or delete records.</p>}
           </div>
@@ -410,6 +554,17 @@ function ViolationDialog({ id, violation, isAdmin, onClose, onChanged }) {
         onConfirm={remove}
       >
         The record and its evidence screenshot will be removed. The deletion is written to the audit log. This cannot be undone.
+      </ConfirmDialog>
+
+      <ConfirmDialog
+        open={confirmOriginal}
+        busy={busy === "original"}
+        title="View the unblurred original?"
+        confirmLabel="View original"
+        onCancel={() => setConfirmOriginal(false)}
+        onConfirm={viewOriginal}
+      >
+        The original shows people's faces. Open it only to check a disputed record. Your name and the time are written to the audit log.
       </ConfirmDialog>
     </>
   );

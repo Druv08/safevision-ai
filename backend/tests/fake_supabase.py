@@ -4,9 +4,21 @@ Minimal in-memory stand-in for the supabase-py client.
 Implements only the query-builder calls the backend uses. Not a general fake.
 """
 
+import itertools
+import json
 import uuid
 from datetime import datetime, timezone
 from types import SimpleNamespace
+
+# Mirrors of database rules the backend relies on.
+UNIQUE = {"alerts": ("violation_id", "recipient_id")}
+APPEND_ONLY = {"audit_log"}  # migration 0004 trigger
+
+
+class FakeAPIError(Exception):
+    def __init__(self, message, code):
+        super().__init__(message)
+        self.code = code
 
 
 def _cmp_value(v):
@@ -23,6 +35,7 @@ class _Query:
         self.db, self.table = db, table
         self.op, self.payload = "select", None
         self.filters, self.count, self.order_by, self.slice = [], None, None, None
+        self._negate = False
 
     # builders
     def select(self, *cols, count=None):
@@ -30,10 +43,12 @@ class _Query:
         return self
 
     def insert(self, row):
+        json.dumps(row)  # like supabase-py: a datetime here is a TypeError
         self.op, self.payload = "insert", row
         return self
 
     def update(self, changes):
+        json.dumps(changes)
         self.op, self.payload = "update", changes
         return self
 
@@ -45,12 +60,24 @@ class _Query:
         self.filters.append(lambda r: str(r.get(col)) == str(val))
         return self
 
+    # SQL: a comparison with null is never true
     def gte(self, col, val):
-        self.filters.append(lambda r: _cmp_value(r[col]) >= _cmp_value(val))
+        self.filters.append(lambda r: r.get(col) is not None and _cmp_value(r[col]) >= _cmp_value(val))
         return self
 
     def lt(self, col, val):
-        self.filters.append(lambda r: _cmp_value(r[col]) < _cmp_value(val))
+        self.filters.append(lambda r: r.get(col) is not None and _cmp_value(r[col]) < _cmp_value(val))
+        return self
+
+    @property
+    def not_(self):
+        self._negate = True
+        return self
+
+    def is_(self, col, val):
+        assert val == "null"
+        negate, self._negate = self._negate, False
+        self.filters.append(lambda r: (r.get(col) is None) != negate)
         return self
 
     def like(self, col, pattern):
@@ -81,13 +108,22 @@ class _Query:
 
     def execute(self):
         rows = self.db.tables.setdefault(self.table, [])
+        if self.table in APPEND_ONLY and self.op in ("update", "delete"):
+            raise FakeAPIError(f"{self.table} is append-only", "P0001")
         if self.op == "insert":
-            row = {"id": str(uuid.uuid4()), "created_at": datetime.now(timezone.utc).isoformat()}
-            if self.table == "violations":
-                row.update(status="new", acknowledged_by=None, closed_by=None)
-            row.update(self.payload)
-            rows.append(row)
-            return SimpleNamespace(data=[dict(row)], count=None)
+            inserted = []
+            for payload in self.payload if isinstance(self.payload, list) else [self.payload]:
+                row_id = next(self.db.ids) if self.table == "audit_log" else str(uuid.uuid4())
+                row = {"id": row_id, "created_at": datetime.now(timezone.utc).isoformat()}
+                if self.table == "violations":
+                    row.update(status="new", acknowledged_by=None, closed_by=None, legal_hold=False)
+                row.update(payload)
+                cols = UNIQUE.get(self.table)
+                if cols and any(all(r.get(c) == row.get(c) for c in cols) for r in rows):
+                    raise FakeAPIError("duplicate key value violates unique constraint", "23505")
+                rows.append(row)
+                inserted.append(dict(row))
+            return SimpleNamespace(data=inserted, count=None)
 
         matched = [r for r in rows if all(f(r) for f in self.filters)]
         if self.op == "update":
@@ -116,6 +152,11 @@ class _Bucket:
         self.objects[path] = data
         return SimpleNamespace(path=path)
 
+    def download(self, path):
+        if path not in self.objects:
+            raise RuntimeError("Object not found")
+        return self.objects[path]
+
     def create_signed_url(self, path, expires_in):
         if path not in self.objects:
             raise RuntimeError("Object not found")
@@ -143,6 +184,7 @@ class FakeSupabase:
     def __init__(self):
         self.tables = {}
         self.objects = {}
+        self.ids = itertools.count(1)
         self.tokens = {}
         self.auth = _Auth(self.tokens)
         self.storage = SimpleNamespace(from_=lambda bucket: _Bucket(self.objects))

@@ -3,11 +3,13 @@
 import dataclasses
 from datetime import datetime, timedelta, timezone
 
+import cv2
 import numpy as np
 
 import config
 from services import local_store, storage_service
 from services import violations_service as vs
+from services.pipeline import Episode, Observation
 
 
 def test_local_mode_roundtrip(tmp_path, monkeypatch):
@@ -18,12 +20,16 @@ def test_local_mode_roundtrip(tmp_path, monkeypatch):
     monkeypatch.setattr(local_store, "SHOTS_DIR", tmp_path / "shots")
     monkeypatch.setattr(local_store, "_conn", None)
 
-    frame = np.zeros((8, 8, 3), dtype=np.uint8)
-    a = vs.save_violation(frame, "no_helmet", 0.9, "image", "m1")
-    vs.save_violation(frame, "no_vest", 0.7, "camera", "m1")
+    jpeg = cv2.imencode(".jpg", np.zeros((8, 8, 3), dtype=np.uint8))[1].tobytes()
+    a = vs.save_episode(Episode("no_helmet", 3, 1.0, 3.0, 4.5, 0.9, (0, 0, 8, 8), jpeg), "video", "m1")
+    vs.save_episode(Episode("no_vest", None, 0.0, 0.0, 0.0, 0.7, (0, 0, 8, 8), jpeg), "camera", "m1", tracked=False)
 
     assert a["status"] == "new" and a["screenshot_path"]
-    assert vs.count_by_type() == {"no_helmet": 1, "no_vest": 1}
+    assert (a["track_id"], a["episode_start_s"], a["episode_end_s"]) == (3, 1.0, 4.5)
+    vs.record_observations([Observation(3, "helmet", "violation", 0, 40, 5, 1.0, 4.5),
+                            Observation(4, "helmet", "compliant", 50, 0, 0, 0.0, 5.0)], "video", "m1")
+    assert vs.compliance_stats()["helmet"] == {"compliant": 1, "violation": 1, "unknown": 0, "rate": 0.5}
+    assert vs.count_by_type() == {"no_helmet": 1, "no_vest": 1, "zone_intrusion": 0}
     rows, total = vs.list_violations(vtype="no_vest")
     assert total == 1 and rows[0]["type"] == "no_vest"
     assert vs.list_violations(q="helmet")[1] == 1

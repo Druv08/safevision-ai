@@ -7,6 +7,7 @@ services:
     environment:
       ENV: production
       UPLOAD_DIR: /app/uploads
+      # Point these at the weights you deploy (same roles as backend/weights.py).
       PPE_MODEL_PATH: /weights/training-runs/safevision_yolov8n_5class_v2/weights/best.pt
       HELMET_MODEL_PATH: /weights/training-runs/safevision_yolov8n_v1/weights/best.pt
       PERSON_MODEL_PATH: /weights/yolov8n.pt

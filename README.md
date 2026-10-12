@@ -9,27 +9,71 @@ It is a prototype. See [Known limitations](#known-limitations) before relying on
 
 ## What it does
 
-- **Detection:** three YOLOv8 models run on every frame: a 5-class PPE model
-  (used for vest / no-vest), a 17-class construction-safety model (used for
-  hardhat / no-hardhat) and COCO `yolov8n` (used only for the person class).
+- **Detection:** one shared pipeline (`backend/services/pipeline.py`) is used
+  by the image and video endpoints, the CLI scripts and evaluation. Per frame it
+  runs a PPE model (vest / no-vest), a helmet model (`HELMET_MODEL_PATH`) and a
+  person model; with a `-pose` person model, head and torso regions come from
+  keypoints, otherwise from box geometry. In video, each person is tracked
+  (ByteTrack) and a violation is logged only after the same person has been
+  missing an item for `VIOLATION_WINDOW_SECONDS` (default 2): one row per
+  person per episode, with start/end time, track ID and one screenshot.
+  Compliant people are recorded too, so `/dashboard-stats` reports a
+  compliance rate.
   A violation is logged only when a missing-helmet or missing-vest detection
   overlaps a detected person, at most once per person per type. A helmet
   held in the hand rather than worn counts as missing.
-- **Inputs:** image upload (jpg, png), video upload (mp4, mov, avi, webm), and
-  a browser camera on the Live Monitoring page (a frame every 3 s, or 5 s clips).
+- **Inputs:** network cameras over RTSP, read continuously by the backend
+  (see below); image upload (jpg, png); video upload (mp4, mov, avi, webm); and
+  a **webcam demo** page that sends frames or 5 s clips from a camera attached
+  to the browser.
+- **Cameras and zones:** admins add RTSP cameras on the Cameras page. Each
+  running camera has a background reader on the server that grabs every frame
+  and analyses the newest one up to `sample_fps` times a second (default 5),
+  reconnects with backoff (1 s doubling to 30 s) when the stream drops, and
+  reports its status (streaming / reconnecting / error, analysed fps, last
+  frame, alerts, reconnects). Credentials are stored encrypted
+  (`CAMERA_SECRET_KEY`) and never returned by the API. Zones are polygons drawn
+  on a camera snapshot, each with a rule: hard hat and vest, hard hat only,
+  vest only, no PPE required, or no entry. A person is in a zone when their
+  feet are; overlapping zones combine (strictest wins); outside every zone the
+  camera's default rule applies. A person in a no-entry zone for the 2 s
+  window is a `zone_intrusion` violation.
 - **Storage:** violations go to Supabase Postgres; screenshots go to a private
   Supabase Storage bucket and are shown through signed URLs that expire after
   5 minutes.
 - **Login:** Supabase Auth (email + password). Two roles: `viewer` (read,
   export) and `admin` (also acknowledge, close and delete).
-- **Review:** dashboard with KPI counts, a violations-over-time chart (24 h / 7 d /
-  30 d / all), breakdowns by type, source and review status, and live system
-  health; violations list with filters by type, status, source and date,
-  search, sorting, pagination, a detail view with the evidence image, status
-  changes with notes (`new` → `acknowledged` → `closed`), delete with
-  confirmation, and CSV export.
-- **Audit:** every screenshot view, export, delete and status change is written
-  to an append-only `audit_log` table.
+- **Review:** the dashboard is aggregate by default: violations by zone, shift
+  (`SHIFTS`, in `SITE_TIMEZONE`) and type, PPE presence rates overall and per
+  shift, review status, recorded causes, and a weekly report (HTML, print to
+  PDF) with the week before for comparison. Individual records and their
+  screenshots are one click deeper, on the Violations page: filters, search,
+  a detail view with the evidence image, and the workflow `new` →
+  `acknowledged` → `action_taken` (a note is required) → `closed`, with a
+  cause: PPE not issued, issued but not worn, damaged, false detection, other.
+- **Alerts:** one message per violation episode (from cameras, by default) to
+  every enabled recipient, at most once (a unique `(violation, recipient)` row
+  is claimed before sending). Channels: WhatsApp (Meta Cloud API or Twilio,
+  from environment variables; with no credentials the message is logged and
+  nothing fails) and signed JSON webhooks. Templates in English and Hindi,
+  chosen per recipient; each message links to the record. Recipients and the
+  delivery log are on the Alerts page (admin).
+- **Privacy:** every detected person is pixelated in stored screenshots before
+  the boxes and labels are drawn (`PRIVACY_BLUR`). The unblurred original is
+  kept only encrypted (`EVIDENCE_SECRET_KEY`) for `ORIGINAL_RETENTION_HOURS`
+  (72); only admins can open it and each view is audited. A job inside the
+  backend deletes screenshots older than `RETENTION_DAYS` (30), expired
+  originals and leftover uploads, except records on legal hold. See
+  [docs/privacy-policy-template.md](docs/privacy-policy-template.md) for the
+  notice, signage, retention statement and usage policy to adapt.
+- **Evidence integrity:** the SHA-256 of each screenshot is stored with the
+  violation and the model version at capture; "Verify" re-hashes the stored
+  file. Admins can export one record as a zip (image, metadata with both
+  hashes, the record's audit trail, `SHA256SUMS`). `audit_log` is append-only
+  for every database role, the service role included.
+- **Audit:** screenshot and original views, exports, deletes, status changes,
+  legal holds, retention deletions and alert-recipient changes are written to
+  `audit_log`.
 
 ## Stack
 
@@ -59,8 +103,8 @@ safevision-ai/
 │   ├── config.py       settings from environment variables
 │   ├── auth.py         Supabase token check, viewer/admin dependencies
 │   ├── supabase_client.py
-│   ├── routes/         detection.py (uploads, list, status, stats), evidence.py (screenshots, export, delete)
-│   ├── services/       detection, video, models, violations, storage
+│   ├── routes/         detection, evidence (screenshots, export, legal hold), cameras, alerts, reports
+│   ├── services/       pipeline, tracker, zones, streams, violations, storage, privacy, evidence, alerts, reports
 │   ├── scripts/        migrate_csv.py (import old CSV logs)
 │   ├── tests/          pytest; Supabase and models are mocked
 │   └── Dockerfile
@@ -96,9 +140,12 @@ point the three `*_MODEL_PATH` variables at your weights:
 
 | Variable | Default | What it is |
 |---|---|---|
-| `PPE_MODEL_PATH` | newest of `ai-model/outputs/training-runs/safevision_yolov8n_5class_v5d_50epochs` and `..._5class_v2` (`weights/best.pt`) | 5-class PPE model |
-| `HELMET_MODEL_PATH` | `ai-model/outputs/training-runs/safevision_yolov8n_v1/weights/best.pt` | 17-class helmet model |
-| `PERSON_MODEL_PATH` | `yolov8n.pt` in the repository root | COCO yolov8n, [download](https://github.com/ultralytics/assets/releases) |
+| `PPE_MODEL_PATH` | `…5class_v5d_50epochs`, else `…5class_v2` (`ai-model/outputs/training-runs/*/weights/best.pt`) | vest / no-vest |
+| `HELMET_MODEL_PATH` | `…5class_v5d_50epochs`, else `…_v1` (17-class) | helmet / no-helmet; classes matched by name |
+| `PERSON_MODEL_PATH` | `yolov8n-pose.pt`, else `yolov8n.pt`, in the repository root | person (+ keypoints with the pose model), [download](https://github.com/ultralytics/assets/releases) |
+
+Defaults live in `backend/weights.py` and are shared with the CLI scripts and
+`evaluate.py`, so every tool uses the same best available weights.
 
 Optionally set `*_MODEL_SHA256` to pin each file. All variables are listed in
 [backend/.env.example](backend/.env.example).
@@ -135,6 +182,27 @@ and mounts `ai-model/outputs/training-runs/` and `./yolov8n.pt` read-only. Both
 must exist on the host first; if `./yolov8n.pt` is missing, Docker creates an
 empty directory with that name.
 
+### Edge device (ONNX)
+
+To run on a small CPU-only computer without PyTorch inference, export the
+weights to ONNX and point the backend (or the CLI scripts) at the `.onnx` files:
+
+```bash
+pip install -r backend/requirements-onnx.txt
+python ai-model/training/export_onnx.py            # the PPE, helmet and person weights in use
+# then in backend/.env: PPE_MODEL_PATH=…/best.onnx  HELMET_MODEL_PATH=…/best.onnx  PERSON_MODEL_PATH=…/yolov8n-pose.onnx
+```
+
+The loader reads each ONNX model's task (detect / pose) and class names from
+the metadata written at export. ONNX models run at the export size (640 by
+default). Run `evaluate.py` with the `.onnx` files before deploying. **The
+ONNX path has not been run yet:** the ONNX packages could not be downloaded in
+the session that added it.
+
+Ultralytics normally `pip install`s missing packages at run time; this project
+turns that off (`YOLO_AUTOINSTALL=false`), so a missing package fails with an
+error instead of being installed on a server or edge device.
+
 ### Tests and lint
 
 ```bash
@@ -157,12 +225,31 @@ Interactive docs are at `/docs` and `/redoc` unless `ENV=production`.
 | GET | `/` | viewer | Liveness message |
 | POST | `/detect-image` | viewer | Form field `image` (jpg/jpeg/png), optional `source=image\|camera`. Returns detections (each with `class_id`, `confidence` and a pixel `box` `[x1, y1, x2, y2]`) and a per-image summary; logs violations. |
 | POST | `/detect-video` | viewer | Form field `video` (mp4/mov/avi/webm), optional `source=video\|camera`. Returns violation counts, `frames_processed`, `duration_seconds` and `events` (`type`, `time` in seconds, `confidence`) for each logged violation; 422 if the video cannot be decoded. |
-| GET | `/violations` | viewer | Query: `type` (`no_helmet`/`no_vest`), `status` (`new`/`acknowledged`/`closed`), `source` (`image`/`video`/`camera`), `date_from`, `date_to` (ISO, exclusive), `q`, `page`, `page_size` (≤ 500), `sort` (`newest` default, or `oldest`). |
-| PATCH | `/violations/{id}` | admin | Body `{"status": "acknowledged" \| "closed", "note": "..."}` |
-| DELETE | `/violations/{id}` | admin | Deletes the row and its screenshot (audited) |
+| GET | `/violations` | viewer | Query: `type` (`no_helmet`/`no_vest`/`zone_intrusion`), `status` (`new`/`acknowledged`/`action_taken`/`closed`), `source` (`image`/`video`/`camera`), `camera_id`, `zone_id`, `date_from`, `date_to` (ISO, exclusive), `q`, `page`, `page_size` (≤ 500), `sort` (`newest` default, or `oldest`). |
+| PATCH | `/violations/{id}` | admin | Body `{"status": "acknowledged" \| "action_taken" \| "closed", "note"?, "cause"?}`; `action_taken` needs a note. Causes: `ppe_not_issued`, `ppe_not_worn`, `ppe_damaged`, `false_detection`, `other`. |
+| DELETE | `/violations/{id}` | admin | Deletes the row, its screenshot and original (audited); 409 on legal hold |
 | GET | `/violations/{id}/evidence` | viewer | `{"url": <signed URL>, "expires_in": 300}` (audited) |
+| GET | `/violations/{id}/verify` | viewer | Re-hashes the stored screenshot: `{"status": "ok" \| "mismatch" \| "missing" \| …}` |
+| GET | `/violations/{id}/original` | admin | Unblurred original JPEG while it is kept (audited before it is returned); 410 when gone |
+| GET | `/violations/{id}/export` | admin | Evidence zip: screenshot, metadata, audit trail, SHA256SUMS (audited) |
+| PUT | `/violations/{id}/legal-hold` | admin | `{"hold": true, "reason": "..."}` or `{"hold": false}` (audited) |
+| GET | `/reports/summary` | viewer | `date_from`, `date_to`, `bucket` (`day`/`hour`): totals by type, zone, shift, status, cause; presence rates; trend |
+| GET | `/reports/weekly` | viewer | `week_start` (Monday, default last complete week): HTML report (audited) |
+| GET, POST | `/alerts/recipients` | admin | List (with the active WhatsApp provider) / add `{"name", "channel": "whatsapp" \| "webhook", "address", "language": "en" \| "hi"}` |
+| PATCH, DELETE | `/alerts/recipients/{id}` | admin | Edit / remove a recipient |
+| POST | `/alerts/recipients/{id}/test` | admin | Sends a sample alert now: `{"status": "sent" \| "logged" \| "failed", "error"}` |
+| GET | `/alerts` | admin | Recent deliveries |
 | GET | `/download-violations` | viewer | CSV of all violations (audited); 404 if there are none |
-| GET | `/dashboard-stats` | viewer | Totals by type and model status |
+| GET | `/dashboard-stats` | viewer | Totals by type, compliance rate and model status |
+| GET | `/cameras` | viewer | Cameras with live status. Never includes credentials (`has_credentials` only). |
+| POST | `/cameras` | admin | `{"name", "url": "rtsp://…", "username"?, "password"?, "sample_fps"?, "default_policy"?, "enabled"?}`. Credentials in the URL are moved to encrypted storage. |
+| PATCH | `/cameras/{id}` | admin | Change any field; omitted credentials are kept, `clear_credentials` removes them. A running camera restarts with the new settings. |
+| DELETE | `/cameras/{id}` | admin | Stops the camera, deletes it and its zones (violations are kept) |
+| POST | `/cameras/{id}/start`, `/stop` | admin | Start / stop analysis (also sets whether it starts with the backend) |
+| GET | `/cameras/{id}/snapshot` | viewer | JPEG of the latest frame (or one fetched now); 503 if unreachable |
+| GET, PUT | `/cameras/{id}/zones` | viewer, admin | Zones as `[{"name", "policy", "polygon": [[x, y], …]}]`, coordinates 0..1. PUT replaces all zones and applies to a running camera from the next frame. |
+
+Camera changes (create, edit, delete, start, stop, zones) are written to `audit_log`.
 
 Upload rules: extension must be in the list above **and** the file's magic
 bytes must match it; files over `MAX_UPLOAD_MB` (default 50) get 413; uploads
@@ -174,25 +261,62 @@ mismatched weights give 503.
 
 - **Accuracy is limited.** The helmet model (v1) has helmet mAP50 0.72 on its
   validation split; the PPE model (v2) has vest mAP50 0.95 and no-vest 0.82
-  (see `docs/research-log.md`). These are validation numbers on public
-  datasets, not field results. Expect false positives and misses.
-- **No live CCTV / RTSP ingestion, no alerts or escalation, no tracking,
-  no zones, no multi-site support, no compliance certificates.** These are
-  planned and labelled as such in the UI.
-- **No deduplication across frames or requests.** Video uses a per-type
-  cooldown (`VIDEO_COOLDOWN_SECONDS`, measured in video time), and webcam
-  mode sends independent frames, so the same person can be logged repeatedly.
+  (see `docs/research-log.md`). These come from random splits in which frames
+  of the same video appear in train and validation, so they are optimistic;
+  [docs/evaluation-protocol.md](docs/evaluation-protocol.md) describes the
+  camera-level split and event metrics to use instead. No event-level numbers
+  exist yet.
+- **No escalation, no multi-site support, no compliance certificates.**
+- **Alerts are untested against real WhatsApp providers.** The Meta and Twilio
+  requests follow their documented APIs, but no message has been sent with
+  real credentials. Both providers deliver free-form text only within 24 hours
+  of the recipient last messaging your number; outside that window they need
+  an approved template, which is not implemented. Alerts go to every enabled
+  recipient (no per-camera routing) and are sent from an in-process pool: a
+  hard kill can leave an alert in `sending`, never retried.
+- **Blurring covers detected people only.** Anyone the person model misses is
+  stored unblurred. Pixelation also blurs the PPE itself; the drawn labels and
+  the original (while kept) are the evidence.
+- **Retention deletes files, not rows.** Violation rows, the alert log and the
+  audit log are kept until an administrator deletes them. The audit log cannot
+  be changed through the application or the service-role key, but the database
+  owner can still disable its triggers.
+- **Reports aggregate in Python** over every row in the range: fine for tens
+  of thousands of records, slow beyond that. Presence rates are per shift and
+  overall, not per zone (an observation spans the person's whole time in view).
+- **Camera reading is tested over HTTP-MJPEG only.** The RTSP path uses the same
+  OpenCV/FFMPEG reader (RTSP over TCP, 10 s timeouts), but it has not been run
+  against a real RTSP camera or server.
+- **Camera throughput is CPU-bound.** All cameras share one model, one frame
+  at a time. On the development laptop (CPU, three models per frame) that is
+  about 6 analysed frames per second in total: three cameras got about 2 fps
+  each, not the configured 5. Use fewer cameras per machine, a GPU, or ONNX
+  on a faster CPU.
+- **Run the backend as a single process.** Camera readers are threads inside
+  the API process; with several uvicorn workers each would read every camera.
+- **A hard kill leaves episodes open.** Stopping a camera or shutting the
+  backend down cleanly closes open violations; after a crash their end time
+  stays empty.
+- **Tracks restart when the picture jumps.** A camera that cuts, loops or
+  re-connects starts new track IDs, which can log the same person again.
+- **Tracking only within one video.** IDs reset per upload, so a webcam clip
+  sent every few seconds starts new tracks each time, and a tracker ID switch
+  (occlusion, camera movement) can log the same person twice. Single images
+  (including webcam frame mode) have no time dimension: every person missing
+  an item is logged at once, so frame mode can log the same person repeatedly.
 - **Synchronous processing.** A video is analysed inside the HTTP request, all
   frames, three models per frame, on CPU. Long videos will time out.
 - **Rate limiting is in-process.** It resets on restart and is per worker.
 - **Every request calls Supabase Auth** to verify the token (one network
   round-trip per request).
-- **The dashboard chart only covers the newest 500 violations.**
 - **Search** matches type, status, note and model version only.
-- **The person model is COCO `yolov8n`** and is downloaded separately; it is not
+- **Snapshots for the zone editor are plain frames** (no overlays), fetched
+  through the API.
+- **The person model is COCO `yolov8n(-pose)`** and is downloaded separately; it is not
   covered by the checksum unless you set `PERSON_MODEL_SHA256`.
-- `ai-model/inference/` scripts still write a local CSV and JPEGs; they are
-  offline tools and do not use Supabase.
+- `ai-model/inference/violation_detection.py` writes a local CSV and JPEGs
+  (`ai-model/outputs/violations/violation_episodes.csv`); import it with
+  `backend/scripts/migrate_csv.py`.
 
 ## License
 

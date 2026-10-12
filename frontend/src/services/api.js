@@ -38,3 +38,21 @@ export function apiError(e, fallback) {
 
 // Matches the backend's MAX_UPLOAD_MB default; the server still enforces its own limit.
 export const MAX_UPLOAD_MB = Number(import.meta.env.VITE_MAX_UPLOAD_MB || 50);
+
+/** GET a file with the auth header and save it as `filename`. Throws an Error with a readable message. */
+export async function download(path, filename, params) {
+  try {
+    const r = await API.get(path, { params, responseType: "blob" });
+    const url = URL.createObjectURL(r.data);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 0);
+  } catch (e) {
+    // Error bodies arrive as a Blob because of responseType.
+    let msg = apiError(e, "Download failed.");
+    try { msg = JSON.parse(await e.response.data.text()).detail || msg; } catch { /* not JSON */ }
+    throw new Error(msg, { cause: e });
+  }
+}
