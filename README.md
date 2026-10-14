@@ -75,6 +75,98 @@ It is a prototype. See [Known limitations](#known-limitations) before relying on
   legal holds, retention deletions and alert-recipient changes are written to
   `audit_log`.
 
+## Unified SafeVision AI (final integration)
+
+Every detection path now runs the same AI as the standalone live camera.
+
+```
+ai-model/inference/video_detection.py   live camera (reference, unchanged)
+            │ helpers imported, per-frame decision block mirrored
+ai-model/inference/safevision_engine.py SafeVisionEngine: load_models / process_frame / stream state
+            │
+backend/services/unified_ai.py          UnifiedDetector (one stream state per image / video / webcam session / camera)
+            │
+backend/services/pipeline.py            tracking, zones, 2 s violation window, evidence, observations (unchanged rules)
+            │
+/detect-image  /detect-video  webcam frames (session)  RTSP cameras (stream_service)
+```
+
+Per frame the engine runs the v5d PPE model, the YOLOv8 pose model and the COCO
+person fallback, merges workers, validates worn-vs-held helmets (face anchor,
+colour assist, per-stream helmet smoothing), rejects hard hats held at the chest
+as vests, and returns per-worker status. Counts are per worker, so
+`helmet + no_helmet = vest + no_vest = workers` on every frame; a worker with no
+valid helmet is `no_helmet` even without a raw no_helmet box.
+
+`/detect-image` keeps `detections` and `summary` and adds `workers` (box,
+helmet/vest status, boxes, confidences, violations), `counts` and
+`inference_ms`. Browser-webcam frames carry a `session` id, so they share
+tracking, smoothing and the violation window: one persistent violation is one
+record, not one per frame.
+
+`SAFE_USE_UNIFIED_AI=false` selects the older `pipeline.associate()` rules.
+If the unified engine cannot load (weights or engine module missing) the API
+answers 503 with the reason; it never falls back silently.
+
+### Model weights (not in Git)
+
+| Role | Env var | File |
+|---|---|---|
+| PPE (helmet / vest) | `PPE_MODEL_PATH` (and `HELMET_MODEL_PATH` for the legacy path) | `ai-model/outputs/training-runs/safevision_yolov8n_5class_v5d_50epochs/weights/best.pt` |
+| Pose workers | `PERSON_MODEL_PATH` | `yolov8n-pose.pt` |
+| COCO person fallback | `FALLBACK_PERSON_MODEL_PATH` | `yolov8n.pt` (default: repo root) |
+
+Without env vars the backend looks for these paths inside the repo.
+
+### Local demo (PowerShell, from the repo root)
+
+```powershell
+# Backend (local demo mode: no Supabase, no sign-in; never use in production)
+cd backend
+$w="<path>\safevision_yolov8n_5class_v5d_50epochs\weights\best.pt"
+$env:DB_DISABLED="true"; $env:AUTH_DISABLED="true"
+$env:PPE_MODEL_PATH=$w; $env:HELMET_MODEL_PATH=$w; $env:PERSON_MODEL_PATH="<path>\yolov8n-pose.pt"
+..\venv\Scripts\python.exe -m uvicorn main:app --host 127.0.0.1 --port 8000
+
+# Frontend
+cd frontend; npm run dev        # http://localhost:5173
+
+# Standalone live camera (press q to quit)
+.\venv\Scripts\python.exe ai-model\inference\video_detection.py --conf 0.4 --pose-conf 0.6 --helmet-hold-frames 8 --helmet-color-assist --model "<best.pt>" --pose-model "<yolov8n-pose.pt>"
+```
+
+RTSP cameras are added on the Cameras page (`rtsp://` / `rtsps://`); each camera
+gets its own engine state. Camera placement, network and cost planning:
+[docs/deployment-guide.md](docs/deployment-guide.md).
+
+### Tests
+
+```powershell
+cd backend; ..\venv\Scripts\python.exe -m pytest -q; ..\venv\Scripts\python.exe -m pytest -q ..\ai-model\tests
+```
+
+`ai-model/tests/test_engine_parity.py` replays a clip through the unmodified
+live camera and through the engine and compares every frame's counts; it needs
+`SAFEVISION_PARITY_VIDEO`, `PPE_MODEL_PATH` and `PERSON_MODEL_PATH` and skips
+without them.
+
+### Status and limits
+
+- Done: shared engine with parity test; image, video, browser-webcam (frame
+  mode, session state) and RTSP paths on the engine; per-worker API fields and
+  overlay counts.
+- The live camera script itself is unchanged and still has its own copy of the
+  per-frame block (the engine mirrors it; the parity test guards drift).
+- Browser webcam frame mode sends one frame every 3 s (API rate limit), so it is
+  near-live, not real-time; the standalone camera is the real-time demo.
+- Worn-helmet acceptance on real footage is covered by the live camera tests
+  done by hand, not by a committed fixture.
+- The backend Docker image is built from `backend/` only; mount
+  `ai-model/inference` and set `SAFEVISION_ENGINE_DIR` to use the unified AI in
+  a container.
+- Three timing-based tests in `backend/tests/test_streams.py` pass locally but
+  have failed on GitHub runners (thread scheduling); not yet made deterministic.
+
 ## Stack
 
 | Part | Technology |

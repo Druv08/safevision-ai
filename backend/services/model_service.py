@@ -72,7 +72,7 @@ def _unified_engine():
 
     try:
         return get_engine()
-    except (FileNotFoundError, ValueError) as e:
+    except (FileNotFoundError, ValueError, ImportError) as e:  # weights / engine module missing
         log.error("Unified SafeVision AI unavailable: %s", e)
         raise ModelUnavailableError(f"SafeVision AI unavailable: {e}") from None
 

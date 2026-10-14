@@ -13,14 +13,17 @@ stream state, so an image, a video, a webcam session or a camera never shares
 helmet smoothing with another.
 """
 
+import os
 import sys
 from functools import cache
+from pathlib import Path
 
 from config import settings
 from services.pipeline import WORN, Det, FrameDets, Person, load_yolo
 from weights import PROJECT_ROOT
 
-INFERENCE_DIR = PROJECT_ROOT / "ai-model" / "inference"
+# Where safevision_engine.py lives; override when the backend runs without the repo (e.g. a container).
+INFERENCE_DIR = Path(os.getenv("SAFEVISION_ENGINE_DIR") or PROJECT_ROOT / "ai-model" / "inference")
 
 
 def _engine_module():

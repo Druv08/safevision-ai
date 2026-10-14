@@ -27,6 +27,10 @@ jobs:
       # Tests mock Supabase and the YOLO models: no keys or weights needed.
       - name: Test
         run: pytest -q
+      # Shared SafeVision engine rules (synthetic model outputs). The live-camera
+      # parity test needs local weights and a clip, so it skips itself here.
+      - name: Test AI engine
+        run: pytest -q ../ai-model/tests
 
   frontend:
     runs-on: ubuntu-latest
