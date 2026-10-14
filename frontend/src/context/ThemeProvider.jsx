@@ -15,13 +15,21 @@ function readInitialTheme() {
   return "dark";
 }
 
+// Applied in the change handler as well as the effect, so components that read
+// CSS tokens during the re-render (chart colours) already see the new theme.
+function applyTheme(theme) {
+  const root = document.documentElement;
+  root.classList.toggle("dark", theme === "dark");
+  root.classList.toggle("light", theme === "light");
+}
+
 export function ThemeProvider({ children }) {
-  const [theme, setTheme] = useState(readInitialTheme);
+  const [theme, setThemeState] = useState(readInitialTheme);
+
+  const setTheme = useCallback((t) => { applyTheme(t); setThemeState(t); }, []);
 
   useEffect(() => {
-    const root = document.documentElement;
-    root.classList.toggle("dark", theme === "dark");
-    root.classList.toggle("light", theme === "light");
+    applyTheme(theme);
     try {
       localStorage.setItem(STORAGE_KEY, theme);
     } catch {
@@ -29,10 +37,7 @@ export function ThemeProvider({ children }) {
     }
   }, [theme]);
 
-  const toggleTheme = useCallback(
-    () => setTheme((t) => (t === "dark" ? "light" : "dark")),
-    []
-  );
+  const toggleTheme = useCallback(() => setTheme(theme === "dark" ? "light" : "dark"), [theme, setTheme]);
 
   const value = useMemo(
     () => ({
@@ -43,7 +48,7 @@ export function ThemeProvider({ children }) {
       darkMode: theme === "dark",
       setDarkMode: (on) => setTheme(on ? "dark" : "light"),
     }),
-    [theme, toggleTheme]
+    [theme, setTheme, toggleTheme]
   );
 
   return <ThemeContext.Provider value={value}>{children}</ThemeContext.Provider>;
