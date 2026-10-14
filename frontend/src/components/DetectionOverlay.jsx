@@ -29,7 +29,8 @@ function DetectionOverlay({ detections, width, height, hidden = [] }) {
             <span
               className={`absolute left-[-2px] px-1.5 py-0.5 rounded-[3px] text-[10px] font-semibold leading-none whitespace-nowrap ${
                 // People are labelled above their box; PPE inside it, so nested labels don't collide.
-                d.class_id === 0 ? "bottom-full mb-0.5" : "top-[-2px]"
+                // A person box touching the top edge keeps its label inside, so it stays visible.
+                d.class_id === 0 && y1 / height > 0.06 ? "bottom-full mb-0.5" : "top-[-2px]"
               }`}
               style={{ background: "var(--tone)", color: "var(--canvas)" }}
             >

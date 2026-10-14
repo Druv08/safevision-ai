@@ -20,6 +20,9 @@ from services.violations_service import record_observations, save_episode, set_e
 
 SESSION_IDLE_S = 60.0  # a webcam session not heard from this long is closed
 MAX_SESSIONS = 32
+# The browser sends a frame every few seconds (rate limit), so a gap between two
+# frames is not the person leaving: tolerate it before a run or a track ends.
+SESSION_FRAME_GAP_S = 4.0
 
 
 def _response(pipe, result) -> dict:
@@ -108,7 +111,11 @@ def analyze_camera_frame(frame, user_id: str, session_id: str) -> dict:
         if s is None:
             pipe = Pipeline(
                 get_detector(),
-                PipelineConfig(window_s=settings.violation_window_seconds, clear_s=settings.violation_clear_seconds),
+                PipelineConfig(
+                    window_s=settings.violation_window_seconds,
+                    clear_s=max(settings.violation_clear_seconds, SESSION_FRAME_GAP_S),
+                    track_timeout_s=2 * SESSION_FRAME_GAP_S,
+                ),
                 tracker=PersonTracker(settings.tracker),
                 redact=redactor(),
             )

@@ -105,18 +105,19 @@ def test_image_response_adds_workers_and_counts(monkeypatch, sb):
     assert {d["class_id"] for d in r["detections"]} == {PERSON_ID, HELMET_ID, NO_VEST_ID}
 
 
-def test_webcam_session_logs_one_violation_not_one_per_frame(monkeypatch):
+@pytest.mark.parametrize("gap_s", [1, 3])  # the browser sends a frame every 3 s
+def test_webcam_session_logs_one_violation_not_one_per_frame(monkeypatch, gap_s):
     saved = []
     engine = FakeEngine([[(A, True, False)]])
     monkeypatch.setattr(detection_service, "get_detector", lambda: UnifiedDetector(engine))
     monkeypatch.setattr(detection_service, "save_episode", lambda ep, *a, **k: saved.append(ep) or {"id": "row"})
     monkeypatch.setattr(detection_service, "set_episode_end", lambda *a, **k: None)
     monkeypatch.setattr(detection_service, "record_observations", lambda *a, **k: None)
-    clock = iter(float(t) for t in range(1000))
+    clock = iter(float(t) for t in range(0, 10000, gap_s))
     monkeypatch.setattr(detection_service.time, "monotonic", lambda: next(clock))
     detection_service._sessions.clear()
 
-    for _ in range(12):  # one frame a second, the worker never wears a vest
+    for _ in range(12):  # the worker never wears a vest
         r = detection_service.analyze_camera_frame(FRAME, "user-1", "session-abc")
         assert r["counts"]["no_vest"] == 1
     assert [e.type for e in saved] == ["no_vest"]

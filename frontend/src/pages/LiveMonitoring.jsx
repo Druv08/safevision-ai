@@ -46,6 +46,8 @@ function LiveMonitoring() {
   const streamRef = useRef(null);
   const timerRef = useRef(null);
   const inFlightRef = useRef(false);
+  // One id per demo run: the backend keeps tracking, helmet smoothing and the violation window per session.
+  const sessionRef = useRef("");
 
   const listDevices = useCallback(async () => {
     if (!navigator.mediaDevices?.enumerateDevices) return;
@@ -98,6 +100,7 @@ function LiveMonitoring() {
         const form = new FormData();
         form.append("image", new File([blob], "frame.jpg", { type: "image/jpeg" }));
         form.append("source", "camera");
+        form.append("session", sessionRef.current);
         const r = await API.post("/detect-image", form);
         if (streamRef.current) record(true, r.data, "frame", startedAt, dims);
       } catch (e) {
@@ -161,6 +164,7 @@ function LiveMonitoring() {
         setCameraError("The camera stopped sending video (unplugged or taken by another app).");
       };
       setStatus("live");
+      sessionRef.current = globalThis.crypto?.randomUUID?.() ?? `s${Date.now()}${Math.random().toString(36).slice(2)}`;
       setLast(null);
       setStats({ analyzed: 0, violations: 0, failed: 0, since: new Date() });
       setEvents([]);
@@ -264,6 +268,12 @@ function LiveMonitoring() {
                     : last ? `Last result ${last.at.toLocaleTimeString()} · ${(last.ms / 1000).toFixed(1)}s`
                     : mode === "frames" ? "First frame in a few seconds…" : "Recording first clip…"}
                 </span>
+                {mode === "frames" && last?.data.counts && (
+                  <span className="badge bg-black/70 border-white/10 text-white/90 h-7">
+                    Workers {last.data.counts.workers} · Hard hat {last.data.counts.helmet}/{last.data.counts.workers}
+                    {" "}· Vest {last.data.counts.vest}/{last.data.counts.workers}
+                  </span>
+                )}
                 {mode === "frames" && last && (
                   <label className="badge bg-black/70 border-white/10 text-white/90 h-7 pointer-events-auto cursor-pointer">
                     <input type="checkbox" checked={showBoxes} onChange={(e) => setShowBoxes(e.target.checked)} className="accent-[var(--primary)]" />
