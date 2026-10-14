@@ -1,62 +1,89 @@
+"""
+YOLO model loading.
+
+Weights paths come from config. A missing or checksum-mismatched file raises
+ModelUnavailableError (the API turns it into 503). There is no fallback to the
+COCO yolov8n weights for PPE classes; yolov8n(-pose) is only the person model.
+"""
+
+import hashlib
+import logging
+from functools import cache
 from pathlib import Path
-from ultralytics import YOLO
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
+from config import settings
+from services.pipeline import Detector, load_yolo
+from services.pipeline import model_version as pipeline_model_version
 
-MODEL_CANDIDATES = [
-    PROJECT_ROOT / "ai-model" / "outputs" / "training-runs" / "safevision_yolov8n_5class_v5d_50epochs" / "weights" / "best.pt",
-    PROJECT_ROOT / "ai-model" / "outputs" / "training-runs" / "safevision_yolov8n_5class_v2" / "weights" / "best.pt",
-    PROJECT_ROOT / "ai-model" / "outputs" / "training-runs" / "safevision_yolov8n_5class_smoke" / "weights" / "best.pt",
-    PROJECT_ROOT / "yolov8n.pt",
-]
+log = logging.getLogger(__name__)
 
-# Select the first candidate that exists, falling back to the first one by default if none are found.
-MODEL_PATH = next((c for c in MODEL_CANDIDATES if c.exists()), MODEL_CANDIDATES[0])
 
-# v1 model trained on 17-class construction-safety dataset — used for Hardhat / NO-Hardhat detection
-HELMET_MODEL_PATH = (
-    PROJECT_ROOT
-    / "ai-model"
-    / "outputs"
-    / "training-runs"
-    / "safevision_yolov8n_v1"
-    / "weights"
-    / "best.pt"
-)
+class ModelUnavailableError(RuntimeError):
+    pass
 
-model = None
-helmet_model = None
-person_model = None
+
+def _sha256(path: Path) -> str:
+    with path.open("rb") as f:
+        return hashlib.file_digest(f, "sha256").hexdigest()
+
+
+def _load(path: Path, expected_sha256: str, what: str, env_name: str):
+    if not path.is_file():
+        log.error("%s weights not found at %s", what, path)
+        raise ModelUnavailableError(f"{what} weights not found ({path.name}); set {env_name}")
+    if expected_sha256 and _sha256(path) != expected_sha256:
+        log.error("%s weights at %s do not match %s_SHA256", what, path, env_name)
+        raise ModelUnavailableError(f"{what} weights checksum mismatch; check {env_name}_SHA256")
+
+    log.info("Loading %s model from %s", what, path)
+    return load_yolo(path)  # .pt or .onnx; imports ultralytics (torch) lazily
+
+
+# functools.cache does not cache exceptions, so a failed load is retried next call.
+# Loading is keyed by path, so a helmet model that is also the PPE model loads once.
+@cache
+def _model(path: Path, sha256: str, what: str, env_name: str):
+    return _load(path, sha256, what, env_name)
 
 
 def get_model():
-    global model
-
-    if model is None:
-        print(f"[INFO] Loading YOLO model from: {MODEL_PATH}")
-        model = YOLO(str(MODEL_PATH))
-
-    return model
+    """PPE model; used for vest / no_vest."""
+    return _model(settings.ppe_model_path, settings.ppe_model_sha256, "PPE", "PPE_MODEL_PATH")
 
 
 def get_helmet_model():
-    global helmet_model
-
-    if helmet_model is None:
-        print(f"[INFO] Loading helmet YOLO model from: {HELMET_MODEL_PATH}")
-        helmet_model = YOLO(str(HELMET_MODEL_PATH))
-
-    return helmet_model
+    """Helmet model (HELMET_MODEL_PATH); used for helmet / no_helmet."""
+    return _model(settings.helmet_model_path, settings.helmet_model_sha256, "Helmet", "HELMET_MODEL_PATH")
 
 
 def get_person_model():
-    global person_model
+    """Person model: a pose model gives head/torso keypoints; plain yolov8n gives boxes."""
+    return _model(settings.person_model_path, settings.person_model_sha256, "Person", "PERSON_MODEL_PATH")
 
-    if person_model is None:
-        person_model_path = PROJECT_ROOT / "yolov8n.pt"
-        if not person_model_path.exists():
-            person_model_path = "yolov8n.pt"
-        print(f"[INFO] Loading Person YOLO model from: {person_model_path}")
-        person_model = YOLO(str(person_model_path))
 
-    return person_model
+@cache
+def get_detector() -> Detector:
+    """The shared Detector. Raises ModelUnavailableError if a model lacks a needed class."""
+    try:
+        return Detector(
+            get_model(), get_helmet_model(), get_person_model(),
+            ppe_conf=settings.ppe_confidence, person_conf=settings.person_confidence,
+        )
+    except ValueError as e:  # e.g. helmet weights with no helmet class
+        raise ModelUnavailableError(str(e)) from None
+
+
+def model_version() -> str:
+    return pipeline_model_version(settings.ppe_model_path, settings.helmet_model_path, settings.person_model_path)
+
+
+def model_status() -> dict:
+    """Load all models (cached after the first success) and report the outcome."""
+    try:
+        detector = get_detector()
+    except ModelUnavailableError as e:
+        return {"loaded": False, "error": str(e)}
+    except Exception as e:  # corrupt weights, torch errors, ...
+        log.exception("Model loading failed")
+        return {"loaded": False, "error": f"model load failed: {type(e).__name__}"}
+    return {"loaded": True, "version": model_version(), "pose": detector.uses_pose}

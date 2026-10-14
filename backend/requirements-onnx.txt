@@ -1,0 +1,6 @@
+# ONNX weights (edge devices) and exporting them: ai-model/training/export_onnx.py
+# Versions resolved from PyPI on 2026-10-12 but NOT installed or tested here (the download failed).
+-r requirements.txt
+onnxruntime==1.31.0
+onnx==1.23.2
+onnxslim==0.1.98

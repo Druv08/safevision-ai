@@ -1,170 +1,53 @@
-from pathlib import Path
-import cv2
-import csv
-import uuid
-import time
-from datetime import datetime
+"""Video detection: the shared pipeline with person tracking and the violation time window."""
 
-from services.model_service import get_model, get_helmet_model
+from config import settings
+from services.model_service import get_detector, model_version
+from services.pipeline import Pipeline, PipelineConfig, VideoDecodeError, compliance, probe_video, run_video
+from services.privacy import redactor
+from services.tracker import PersonTracker
+from services.violations_service import record_observations, save_episode
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
-
-OUTPUT_DIR = (
-    PROJECT_ROOT
-    / "ai-model"
-    / "outputs"
-    / "violations"
-)
-
-SCREENSHOT_DIR = OUTPUT_DIR / "screenshots"
-
-CSV_PATH = OUTPUT_DIR / "violations_log.csv"
-
-OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-SCREENSHOT_DIR.mkdir(parents=True, exist_ok=True)
-
-COOLDOWN_SECONDS = 5
-
-# v1 model (17-class construction-safety) class IDs
-V1_HARDHAT_CLS = 4
-V1_NO_HARDHAT_CLS = 6
-
-# 5-class model class IDs for vest
-VEST_CLS = 3
-NO_VEST_CLS = 4
+__all__ = ["VideoDecodeError", "detect_video"]
 
 
-def save_violation(
-    frame,
-    source_name,
-    frame_number,
-    violation_type,
-    severity,
-    confidence
-):
-    timestamp = datetime.now().strftime(
-        "%Y-%m-%d_%H-%M-%S"
+def detect_video(video_path, source="video"):
+    probe_video(video_path)  # a broken upload is a 422 even when the models are unavailable
+    pipe = Pipeline(
+        get_detector(),
+        PipelineConfig(window_s=settings.violation_window_seconds, clear_s=settings.violation_clear_seconds),
+        tracker=PersonTracker(settings.tracker),
+        redact=redactor(),
     )
+    run = run_video(video_path, pipe)
 
-    violation_id = str(uuid.uuid4())[:8]
+    version = model_version()
+    for ep in run.episodes:
+        save_episode(ep, source, version)
+    record_observations(run.observations, source, version)
 
-    screenshot_name = (
-        f"{timestamp}_{violation_id}_{violation_type.replace(' ','_')}.jpg"
-    )
-
-    screenshot_path = (
-        SCREENSHOT_DIR / screenshot_name
-    )
-
-    cv2.imwrite(
-        str(screenshot_path),
-        frame
-    )
-
-    with open(
-        CSV_PATH,
-        "a",
-        newline=""
-    ) as f:
-
-        writer = csv.writer(f)
-
-        writer.writerow([
-            violation_id,
-            timestamp,
-            source_name,
-            frame_number,
-            violation_type,
-            severity,
-            round(confidence, 3),
-            str(screenshot_path)
-        ])
-
-
-def detect_video(video_path):
-
-    vest_model = get_model()
-    h_model = get_helmet_model()
-
-    cap = cv2.VideoCapture(video_path)
-
-    total_violations = 0
-    helmet_violations = 0
-    vest_violations = 0
-
-    frame_number = 0
-
-    last_save = {
-        "helmet": 0,
-        "vest": 0
-    }
-
-    while True:
-
-        success, frame = cap.read()
-
-        if not success:
-            break
-
-        frame_number += 1
-
-        vest_results = vest_model.predict(frame, conf=0.25, verbose=False)
-        helmet_results = h_model.predict(frame, conf=0.25, verbose=False)
-
-        current_time = time.time()
-
-        no_helmet_boxes = []
-        no_vest_boxes = []
-
-        if helmet_results and helmet_results[0].boxes is not None:
-            for box in helmet_results[0].boxes:
-                cls_id = int(box.cls[0])
-                conf = float(box.conf[0])
-                if cls_id == V1_NO_HARDHAT_CLS:
-                    no_helmet_boxes.append(conf)
-
-        if vest_results and vest_results[0].boxes is not None:
-            for box in vest_results[0].boxes:
-                cls_id = int(box.cls[0])
-                conf = float(box.conf[0])
-                if cls_id == NO_VEST_CLS:
-                    no_vest_boxes.append(conf)
-
-        for conf in no_helmet_boxes:
-            if current_time - last_save["helmet"] > COOLDOWN_SECONDS:
-                helmet_violations += 1
-                total_violations += 1
-                save_violation(
-                    frame,
-                    Path(video_path).name,
-                    frame_number,
-                    "Helmet Missing",
-                    "High",
-                    conf
-                )
-                last_save["helmet"] = current_time
-
-        for conf in no_vest_boxes:
-            if current_time - last_save["vest"] > COOLDOWN_SECONDS:
-                vest_violations += 1
-                total_violations += 1
-                save_violation(
-                    frame,
-                    Path(video_path).name,
-                    frame_number,
-                    "Safety Vest Missing",
-                    "Medium",
-                    conf
-                )
-                last_save["vest"] = current_time
-
-    cap.release()
-
+    counts = {"no_helmet": 0, "no_vest": 0}
+    for ep in run.episodes:
+        counts[ep.type] += 1
     return {
-        "filename": Path(video_path).name,
         "status": "processed",
         "message": "Video analyzed successfully",
-        "total_violations": total_violations,
-        "helmet_violations": helmet_violations,
-        "vest_violations": vest_violations
+        "frames_processed": run.frames,
+        "total_violations": len(run.episodes),
+        "helmet_violations": counts["no_helmet"],
+        "vest_violations": counts["no_vest"],
+        "duration_seconds": round(run.duration_s, 2),
+        "people_tracked": len({o.track_id for o in run.observations}),
+        "compliance": compliance(run.observations),
+        # `time` is when the alert was raised (start + window), so the player jumps to the evidence frame.
+        "events": [
+            {
+                "type": ep.type,
+                "time": round(ep.alert_s, 2),
+                "start": round(ep.start_s, 2),
+                "end": round(ep.end_s, 2),
+                "track_id": ep.track_id,
+                "confidence": round(ep.confidence, 3),
+            }
+            for ep in run.episodes
+        ],
     }
