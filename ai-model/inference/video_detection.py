@@ -1,4 +1,4 @@
-"""
+r"""
 SafeVision AI - Day 5 / Day 8 update
 Local video / webcam PPE detection using TWO YOLOv8 models in parallel:
 
@@ -34,18 +34,26 @@ worn (optionally drawn in amber with --show-loose-vests).
 Events are now real violation events (not per-frame): a continuous `no_vest`
 worker is counted ONCE, using a small stateful tracker (cooldown + clear_after).
 
-Usage:
-    # Webcam (default)
-    python ai-model/inference/video_detection.py
+FINAL DEMO COMMAND (live webcam, clean overlay; run from the repo root):
 
-    # Video file with saved output
+    .\venv\Scripts\python.exe ai-model\inference\video_detection.py --conf 0.4 --pose-conf 0.6 --helmet-hold-frames 8 --helmet-color-assist
+
+    Screen: cyan "worker" box per person, green "helmet" / "vest" boxes, a red
+    "no_vest" tag on workers without a vest, and the HUD (FPS, workers, vest,
+    no_vest, helmet, no_helmet, events). Press 'q' in the window to quit.
+
+Other usage:
+    # Video file instead of the webcam, saving the annotated output
     python ai-model/inference/video_detection.py --source path/to/video.mp4 --save
 
-    # Tune the worn-vest / event logic
-    python ai-model/inference/video_detection.py --vest-overlap 0.25 \
-        --event-cooldown 5 --clear-after 2 --show-loose-vests
-
-Press 'q' in the video window to quit.
+Debug flags (all OFF by default; the demo overlay stays clean without them):
+    --show-helmet-debug        head region, face anchor dot + source, uncertain /
+                               rejected helmet boxes, per-candidate console lines
+    --show-worker-debug        worker source (pose / coco) + confidence on each box
+    --show-helmet-debug-boxes  every raw helmet / no_helmet box from the model
+    --show-negative-boxes      red no_helmet / no_vest boxes
+    --debug-ppe                print raw PPE detections with keep/drop reasons
+    --no-person-fallback       pose-only workers (disable the COCO person fallback)
 
 SafeVision PPE classes (v2 model):
     0 = person      (weak - NOT used for worker count)
@@ -105,6 +113,20 @@ def _find_default_pose_model() -> str:
 
 
 DEFAULT_POSE_MODEL = _find_default_pose_model()
+
+
+def _find_default_person_model() -> str:
+    """Locate a local yolov8n.pt (COCO detector) for the person fallback."""
+    for c in (PROJECT_ROOT / "yolov8n.pt", PROJECT_ROOT.parent / "yolov8n.pt",
+              Path.cwd() / "yolov8n.pt"):
+        if c.exists():
+            return str(c)
+    return "yolov8n.pt"
+
+
+DEFAULT_PERSON_MODEL = _find_default_person_model()
+COCO_PERSON_CLASS = 0
+POSE_EVIDENCE_CONF = 0.10   # pose detections used only as head-keypoint evidence
 
 # ---- Colors (OpenCV uses BGR, not RGB) ------------------------------------
 WORKER_BOX_COLOR = (255, 200, 0)    # cyan-ish blue  -> every valid worker
@@ -219,6 +241,43 @@ def parse_args() -> argparse.Namespace:
         type=float,
         default=0.5,
         help="YOLO pose person-box confidence threshold (default: 0.5)",
+    )
+    parser.add_argument(
+        "--person-fallback",
+        dest="person_fallback",
+        action="store_true",
+        default=True,
+        help=(
+            "ON by default. Also run the COCO person detector (yolov8n.pt) and "
+            "count every person it finds as a worker, merged with the pose "
+            "workers (duplicates removed by IoU). Catches seated, side-facing, "
+            "partially hidden people the pose keypoint gate rejects."
+        ),
+    )
+    parser.add_argument(
+        "--no-person-fallback",
+        dest="person_fallback",
+        action="store_false",
+        help="Disable the COCO person fallback (pose-only workers, old behaviour).",
+    )
+    parser.add_argument(
+        "--person-conf",
+        type=float,
+        default=0.35,
+        help="COCO person-fallback confidence threshold (default: 0.35).",
+    )
+    parser.add_argument(
+        "--person-model",
+        default=DEFAULT_PERSON_MODEL,
+        help="COCO detector weights for the person fallback (default: yolov8n.pt).",
+    )
+    parser.add_argument(
+        "--show-worker-debug",
+        action="store_true",
+        help=(
+            "Debug only: label each worker box with its source (pose / coco) "
+            "and confidence. Normal mode shows a plain 'worker' box."
+        ),
     )
     parser.add_argument(
         "--ppe-worker-overlap",
@@ -712,10 +771,18 @@ def validate_worn_helmet(candidate_box, worker_box, face, frame_shape):
         side_tol = max(1.0 * hw, 0.10 * w)
         inside_w = min(bx2, hx2) - max(bx1, hx1)
 
+        # Helmet spans the face column and sits above eye level -> it is ON the
+        # head. In side profile the face anchor shifts toward the nose while the
+        # shell stays over the skull, so the off-centre "held" tests below would
+        # wrongly reject it. A helmet held BESIDE the head never spans the face.
+        spans_face = (bx1 - 0.1 * bw) <= cx <= (bx2 + 0.1 * bw)
+        above_eyes = by1 < cy and by2 <= cy + 1.0 * hw
+        on_head_column = spans_face and above_eyes
+
         # Clear HELD signals -> reject.
-        if dx > max(2.2 * hw, 0.32 * w):
+        if not on_head_column and dx > max(2.2 * hw, 0.32 * w):
             return "reject", "rejected_far_from_head_center"
-        if dx > side_tol and inside_w < 0.4 * bw:
+        if not on_head_column and dx > side_tol and inside_w < 0.4 * bw:
             return "reject", "rejected_held_side"
         if bcy > cy + 1.2 * hw:
             return "reject", "rejected_too_low"
@@ -726,7 +793,7 @@ def validate_worn_helmet(candidate_box, worker_box, face, frame_shape):
         overlap    = calculate_overlap_ratio(candidate_box, head_region)
         region_cov = calculate_overlap_ratio(head_region, candidate_box)
         sits_above = (by2 <= cy) and (by2 >= hy1 - 0.5 * hw)
-        aligned = (dx <= far_tol and bcy <= cy + 0.6 * hw
+        aligned = ((dx <= far_tol or on_head_column) and bcy <= cy + 0.6 * hw
                    and (max(overlap, region_cov) >= 0.12 or sits_above))
         if aligned:
             hr_area = max(1.0, (hx2 - hx1) * (hy2 - hy1))
@@ -1056,7 +1123,7 @@ class HelmetSmoother:
         self.tracks: list = []
 
     def update(self, worker_boxes, worker_real, support_boxes=None,
-               allow_ghost=False):
+               allow_ghost=False, worker_rejected=None):
         """Smooth the worn-helmet status. Returns (per_worker, ghosts):
 
           per_worker : list PARALLEL to `worker_boxes`; each entry is
@@ -1075,8 +1142,15 @@ class HelmetSmoother:
 
         A ghost track only ever originates from a previously ACCEPTED worn
         helmet, so loose / held helmets cannot start one.
+
+        `worker_rejected` (parallel to `worker_boxes`) marks a worker whose
+        helmet candidates were ALL clearly rejected this frame (held to the
+        side / too low). Two such frames in a row cancel that worker's hold, so
+        taking the helmet off and holding it drops "helmet" within 2 frames,
+        while a single bad frame on a worn helmet does not.
         """
         support_boxes = support_boxes or []
+        worker_rejected = worker_rejected or [False] * len(worker_boxes)
         head_boxes = [get_worker_head_box(wb) for wb in worker_boxes]
 
         # Smoothing disabled -> only real on-head detections, no hold-over.
@@ -1116,9 +1190,14 @@ class HelmetSmoother:
                 box, conf = worker_real[i]
                 new_tracks.append({
                     "head_box": hbx, "frames_left": self.hold_frames,
-                    "helmet_box": box, "conf": conf,
+                    "helmet_box": box, "conf": conf, "rejects": 0,
                 })
                 per_worker[i] = (box, conf, False)
+            elif (worker_rejected[i] and track is not None
+                  and track.get("rejects", 0) >= 1):
+                # Helmet clearly NOT worn for a 2nd frame in a row -> cancel the
+                # hold (track stays marked used, so it cannot become a ghost).
+                pass
             elif track is not None and track["frames_left"] > 0:
                 # No detection this frame but worker visible + hold still open:
                 # keep helmet, re-anchored to the worker's current head.
@@ -1130,6 +1209,7 @@ class HelmetSmoother:
                 new_tracks.append({
                     "head_box": hbx, "frames_left": track["frames_left"] - 1,
                     "helmet_box": box, "conf": track["conf"],
+                    "rejects": 1 if worker_rejected[i] else 0,
                 })
                 per_worker[i] = (box, track["conf"], True)
             # else: worker visible but no helmet + no open hold -> stays None.
@@ -1144,19 +1224,24 @@ class HelmetSmoother:
             for ti, t in enumerate(self.tracks):
                 if ti in used or t["frames_left"] <= 0:
                     continue
-                supported = any(
-                    calculate_iou(sb, t["head_box"]) >= 0.20
-                    or box_center_inside(sb, t["head_box"], margin=0.6)
-                    for sb in support_boxes
+                support = next(
+                    (sb for sb in support_boxes
+                     if calculate_iou(sb, t["head_box"]) >= 0.20
+                     or box_center_inside(sb, t["head_box"], margin=0.6)),
+                    None,
                 )
-                if not supported:
+                if support is None:
                     continue
+                # Show the ghost at the CURRENT supporting detection, not the old
+                # head position, so it merges with any fresh box of the same
+                # helmet instead of counting as a second helmet.
                 new_tracks.append({
                     "head_box": t["head_box"],
                     "frames_left": t["frames_left"] - 1,
-                    "helmet_box": t["helmet_box"], "conf": t["conf"],
+                    "helmet_box": tuple(support), "conf": t["conf"],
+                    "rejects": t.get("rejects", 0),
                 })
-                ghosts.append((t["helmet_box"], t["conf"]))
+                ghosts.append((tuple(support), t["conf"]))
 
         self.tracks = new_tracks
         return per_worker, ghosts
@@ -1251,6 +1336,214 @@ def get_valid_worker_boxes(
     return workers
 
 
+def dedupe_person_detections(dets, contain_thr: float = 0.85, iou_thr: float = 0.60):
+    """Drop duplicate pose detections of the SAME person.
+
+    The pose model sometimes emits a second box for one person, stretched up
+    over a raised arm / held helmet. That duplicate double-counts workers and,
+    worse, its head anchor sits near the raised helmet, so a HELD helmet passes
+    the worn check. A detection is a duplicate if it heavily overlaps (IoU) or
+    almost fully contains / is contained by a higher-confidence one; the
+    higher-confidence box is kept. Two different people side by side overlap
+    far less than this, so they are both kept. Containment only counts when
+    the two boxes are of similar size, so a small seated person inside a
+    standing person's box (crowded room) is NOT treated as a duplicate.
+    """
+    kept = []
+    for d in sorted(dets, key=lambda d: d[1], reverse=True):
+        if not any(_same_person(d[0], k[0], contain_thr, iou_thr) for k in kept):
+            kept.append(d)
+    return kept
+
+
+def _box_area(b) -> float:
+    return max(0.0, b[2] - b[0]) * max(0.0, b[3] - b[1])
+
+
+def _same_person(a, b, contain_thr: float = 0.85, iou_thr: float = 0.60) -> bool:
+    """True if boxes a and b are two detections of the same person."""
+    if calculate_iou(a, b) >= iou_thr:
+        return True
+    small, big = sorted((_box_area(a), _box_area(b)))
+    if big <= 0 or small / big < 0.5:
+        return False
+    return (calculate_overlap_ratio(a, b) >= contain_thr
+            or calculate_overlap_ratio(b, a) >= contain_thr)
+
+
+def get_coco_person_boxes(person_result, person_conf: float):
+    """COCO detector person boxes as worker tuples (box, conf, None, None)."""
+    out = []
+    if person_result is None or person_result.boxes is None:
+        return out
+    boxes = person_result.boxes.xyxy.cpu().numpy()
+    confs = person_result.boxes.conf.cpu().numpy()
+    cls_ids = person_result.boxes.cls.cpu().numpy().astype(int)
+    for (x1, y1, x2, y2), conf, cid in zip(boxes, confs, cls_ids):
+        if cid == COCO_PERSON_CLASS and conf >= person_conf:
+            out.append(((float(x1), float(y1), float(x2), float(y2)),
+                        float(conf), None, None))
+    return out
+
+
+# A low-confidence COCO person must show head/shoulder keypoints to count.
+# Without this, a hand holding a helmet next to the body is detected as a
+# second "person" (conf ~0.35-0.51). Real seated / partial people almost always
+# have a visible head or shoulder keypoint, or a higher COCO confidence.
+COCO_NO_HEAD_MIN_CONF = 0.52
+HEAD_SHOULDER_KPS = (KP_NOSE, KP_LEYE, KP_REYE, KP_LEAR, KP_REAR, KP_LSHO, KP_RSHO)
+
+
+def has_head_keypoints(box, pose_dets, kp_thr: float = 0.4, min_kps: int = 2) -> bool:
+    """True if one pose detection has >= min_kps nose/eye/ear/shoulder
+    keypoints (conf >= kp_thr) inside `box`. Two are required because the pose
+    model can place a single weak "head" keypoint on a hand-held helmet."""
+    x1, y1, x2, y2 = box
+    for _b, _c, kxy, kcf in pose_dets:
+        if kxy is None or kcf is None:
+            continue
+        n = 0
+        for k in HEAD_SHOULDER_KPS:
+            if k < len(kcf) and kcf[k] >= kp_thr:
+                kx, ky = float(kxy[k][0]), float(kxy[k][1])
+                if x1 <= kx <= x2 and y1 <= ky <= y2:
+                    n += 1
+        if n >= min_kps:
+            return True
+    return False
+
+
+def other_person_poses(pose_dets, pose_workers):
+    """Pose detections that are NOT an already-counted pose worker.
+
+    Head evidence for a COCO person must come from someone else: the counted
+    worker's own shoulder often falls inside a box drawn around their hand +
+    held helmet, and must not vouch for that box.
+    """
+    return [d for d in pose_dets
+            if not any(_same_person(d[0], w[0], iou_thr=0.45) for w in pose_workers)]
+
+
+def filter_coco_persons(coco_persons, evidence_poses):
+    """Drop COCO persons that are low-confidence AND show no head/shoulder."""
+    return [p for p in coco_persons
+            if p[1] >= COCO_NO_HEAD_MIN_CONF
+            or has_head_keypoints(p[0], evidence_poses)]
+
+
+def merge_workers(pose_workers, coco_persons):
+    """Union of pose workers and COCO persons, duplicates removed.
+
+    Pose workers are kept first (they carry keypoints for helmet anchoring).
+    A COCO person is added only if it is not the same person as an already
+    kept box (IoU >= 0.45, or similar-size containment). Returns
+    (workers, sources) where sources[i] is 'pose' or 'coco'.
+    """
+    workers = list(pose_workers)
+    sources = ["pose"] * len(workers)
+    for p in sorted(coco_persons, key=lambda d: d[1], reverse=True):
+        if any(_same_person(p[0], w[0], iou_thr=0.45) for w in workers):
+            continue
+        workers.append(p)
+        sources.append("coco")
+    return workers, sources
+
+
+KP_LWRIST, KP_RWRIST = 9, 10
+
+
+def _both_wrists_on(box, worker) -> bool:
+    """True if both of this worker's wrist keypoints are on/near `box`."""
+    kxy, kcf = worker[2], worker[3]
+    if kxy is None or kcf is None:
+        return False
+    x1, y1, x2, y2 = box
+    bw, bh = x2 - x1, y2 - y1
+    ex1, ey1, ex2, ey2 = x1 - 0.15 * bw, y1 - 0.15 * bh, x2 + 0.15 * bw, y2 + 0.15 * bh
+    return all(
+        kcf[k] >= 0.3 and ex1 <= kxy[k][0] <= ex2 and ey1 <= kxy[k][1] <= ey2
+        for k in (KP_LWRIST, KP_RWRIST)
+    )
+
+
+def validate_worn_vest(frame, worker, vest_box) -> bool:
+    """False if a "vest" box (already on this worker's body) is really a hard
+    hat held in front of the chest; True otherwise.
+
+    The PPE model can label a held yellow helmet (shell or inside facing the
+    camera) as a confident vest. Rejected when the box is roughly square (a
+    vest on a body is taller than wide), its vivid colour is mostly HARD-HAT
+    yellow (hue 18-29) rather than the greener hi-vis yellow (hue 30-45), and
+    either there is essentially NO hi-vis yellow at all or both wrists are on
+    the box (held in two hands). On the v5d test+valid vests this rejects
+    about 1% of real worn vests.
+
+    A torso y-band check (28-75% of the worker box) was measured and NOT
+    used: it accepted the held-helmet case (close-up webcam boxes are cut off
+    at the frame bottom) while rejecting 5.3% of real worn vests.
+    """
+    x1, y1, x2, y2 = vest_box
+    bw, bh = x2 - x1, y2 - y1
+    if bw <= 0 or bh <= 0 or not 0.75 <= bw / bh <= 1.33:
+        return True
+    roi = frame[max(0, int(y1)):int(y2), max(0, int(x1)):int(x2)]
+    if roi.size == 0:
+        return True
+    hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
+    h, s, v = hsv[..., 0], hsv[..., 1], hsv[..., 2]
+    vivid = (s > 90) & (v > 90)
+    hardhat = float((vivid & (h >= 18) & (h <= 29)).mean())
+    hivis = float((vivid & (h >= 30) & (h <= 45)).mean())
+    if hardhat < 0.15 or hardhat / (hardhat + hivis + 1e-6) < 0.7:
+        return True
+    held = hivis <= 0.005 or _both_wrists_on(vest_box, worker)
+    return not held
+
+
+def assign_vests_per_worker(worker_boxes, vest_dets, min_inside: float = 0.5):
+    """Give each worker at most one vest; returns per-worker (box, conf) | None.
+
+    A vest belongs to a worker when its centre lies inside the worker box and
+    at least `min_inside` of the vest area is inside it. Each vest is used
+    once (greedy by overlap), so one vest never makes two people compliant.
+    A worker left without a vest is counted as no_vest.
+    """
+    pairs = []
+    for wi, wb in enumerate(worker_boxes):
+        for vi, (vb, vc) in enumerate(vest_dets):
+            if not box_center_inside(vb, wb):
+                continue
+            inside = calculate_overlap_ratio(vb, wb)
+            if inside >= min_inside:
+                pairs.append((inside, vc, wi, vi))
+    result = [None] * len(worker_boxes)
+    used_v = set()
+    for _inside, _vc, wi, vi in sorted(pairs, reverse=True):
+        if result[wi] is None and vi not in used_v:
+            result[wi] = vest_dets[vi]
+            used_v.add(vi)
+    return result
+
+
+def dedupe_helmet_boxes(helmets, iou_thr: float = 0.30):
+    """Merge overlapping active helmet boxes into one (keep highest conf).
+
+    A fresh detection plus a held-over / ghost box of the SAME helmet (fast
+    motion moves the head box, so the old track no longer matches) must count
+    as one helmet, not two.
+    """
+    kept = []
+    for box, conf in sorted(helmets, key=lambda h: h[1], reverse=True):
+        dup = any(
+            calculate_iou(box, kb) >= iou_thr
+            or box_center_inside(box, kb) or box_center_inside(kb, box)
+            for kb, _ in kept
+        )
+        if not dup:
+            kept.append((box, conf))
+    return kept
+
+
 def get_person_regions(pose_result, pose_conf: float):
     """Return ALL pose person detections >= pose_conf (NO keypoint gate), with
     keypoints: [((x1,y1,x2,y2), conf, kp_xy, kp_conf), ...].
@@ -1288,16 +1581,37 @@ def get_person_regions(pose_result, pose_conf: float):
 # ---------------------------------------------------------------------------
 # Drawing helpers
 # ---------------------------------------------------------------------------
+def _ui_scale(frame) -> float:
+    """Overlay scale so labels / HUD stay readable on large frames
+    (1.0 at <= 960 px wide, e.g. a 640x480 webcam; 2.0 at 1920 px)."""
+    return max(1.0, frame.shape[1] / 960.0)
+
+
+def _draw_tag(frame, x, y_bottom, text, bg, fg=(0, 0, 0)) -> int:
+    """Filled text tag whose bottom-left corner is (x, y_bottom). Returns the
+    tag height in pixels so callers can stack tags without overlap."""
+    s = _ui_scale(frame)
+    fs, ft = 0.5 * s, max(1, int(round(s)))
+    (tw, th), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, fs, ft)
+    pad = int(3 * s)
+    # Keep the whole tag inside the image (with a small margin), e.g. when
+    # the worker box runs off the bottom or side of the frame.
+    fh, fw = frame.shape[:2]
+    margin = int(6 * s)
+    x = int(min(max(x, margin), fw - tw - 2 * pad - margin))
+    y_bottom = int(min(max(y_bottom, th + 2 * pad + margin), fh - margin))
+    cv2.rectangle(frame, (x, y_bottom - th - 2 * pad), (x + tw + 2 * pad, y_bottom), bg, -1)
+    cv2.putText(frame, text, (x + pad, y_bottom - pad),
+                cv2.FONT_HERSHEY_SIMPLEX, fs, fg, ft, cv2.LINE_AA)
+    return th + 2 * pad
+
+
 def _draw_labeled_box(frame, box, text, color, thickness: int = 2) -> None:
     """Draw a rectangle + filled label tag for one box."""
     x1, y1, x2, y2 = (int(v) for v in box)
-    cv2.rectangle(frame, (x1, y1), (x2, y2), color, thickness)
-    (tw, th), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
-    cv2.rectangle(frame, (x1, y1 - th - 6), (x1 + tw + 4, y1), color, -1)
-    cv2.putText(
-        frame, text, (x1 + 2, y1 - 4),
-        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 1, cv2.LINE_AA,
-    )
+    cv2.rectangle(frame, (x1, y1), (x2, y2), color,
+                  max(thickness, int(round(thickness * _ui_scale(frame)))))
+    _draw_tag(frame, x1, y1, text, color)
 
 
 def _fmt_box(box) -> str:
@@ -1380,12 +1694,13 @@ def draw_hud(frame, fps: float, display: dict, workers_n: int) -> None:
         (f"events: {total_events}",  RED   if total_events > 0 else WHITE),
     ]
 
-    x0, y0      = 20, 30
+    s           = _ui_scale(frame)
+    x0, y0      = int(20 * s), int(30 * s)
     font        = cv2.FONT_HERSHEY_SIMPLEX
-    font_scale  = 0.7
-    thickness   = 2
-    line_h      = 30
-    pad         = 12
+    font_scale  = 0.7 * s
+    thickness   = max(2, int(round(2 * s)))
+    line_h      = int(30 * s)
+    pad         = int(12 * s)
 
     max_text_w = max(
         cv2.getTextSize(text, font, font_scale, thickness)[0][0]
@@ -1433,67 +1748,25 @@ def main() -> int:
         print(f"[ERROR] PPE model weights not found: {model_path}")
         return 1
 
-    print(f"[INFO] Loading PPE model: {model_path}")
+    print("[INFO] Loading models ...")
     try:
         model = YOLO(str(model_path))
     except Exception as exc:
         print(f"[ERROR] Failed to load PPE model: {exc}")
         return 1
-    print("[INFO] PPE model loaded.")
-    print(f"[INFO] PPE model path        : {model_path}")
-
-    print(f"[INFO] Loading pose model: {args.pose_model}")
     try:
         pose_model = YOLO(args.pose_model)
     except Exception as exc:
         print(f"[ERROR] Failed to load pose model: {exc}")
         return 1
-    print("[INFO] Pose model loaded.")
-    print(
-        f"[INFO] Thresholds  -> PPE conf: {args.conf:.2f}   "
-        f"Pose conf: {args.pose_conf:.2f}   "
-        f"Keypoint conf: {KEYPOINT_CONF_THRESHOLD:.2f} "
-        f"(need {MIN_IMPORTANT_KEYPOINTS}/{len(IMPORTANT_KEYPOINTS)} important keypoints)"
-    )
-    # ---- Day 8 worn-vest / event-logic startup summary --------------------
-    if args.strict_vest_matching:
-        print("[INFO] Vest matching mode    : STRICT torso overlap (experimental)")
-        print(f"[INFO] Vest overlap threshold: {args.vest_overlap:.2f}")
-        print(f"[INFO] Show loose vests      : {args.show_loose_vests}")
-        print(f"[INFO] Show torso (debug)    : {args.show_torso}")
-    else:
-        print("[INFO] Vest matching mode    : stable (raw PPE objects) [default]")
-        print(f"[INFO] PPE-worker overlap    : {args.ppe_worker_overlap:.2f} "
-              f"(vest/no_vest; 0 if no workers)")
-        print(f"[INFO] Helmet-worker overlap : {args.helmet_worker_overlap:.2f} "
-              f"(helmet matched by HEAD region, top {int(HEAD_REGION_FRAC*100)}% of worker)")
-        print("[INFO] Negative boxes        : "
-              + ("shown (red boxes, debug)" if args.show_negative_boxes
-                 else "hidden [default, clean overlay]"))
-        print(f"[INFO] Show loose helmets    : {args.show_loose_helmets}")
-        print(f"[INFO] Show helmet dbg boxes : {args.show_helmet_debug_boxes}")
-        print("[INFO] Helmet hold (frames)  : "
-              + (f"{args.helmet_hold_frames} (worn-helmet anti-flicker smoothing)"
-                 if args.helmet_hold_frames > 0 else "0 (disabled, raw per-frame)"))
-        print("[INFO] No-helmet inference   : "
-              + ("ON (worker-based: visible worker w/o on-head helmet = no_helmet)"
-                 if args.infer_no_helmet else "OFF (raw no_helmet detections only)"))
-        print("[INFO] Helmet colour-assist  : "
-              + ("ON (HSV yellow-shell fallback for missed worn helmets)"
-                 if args.helmet_color_assist else "OFF [default]"))
-        print("[INFO] Worker-drop fallback  : "
-              + (f"ON (ghost-hold worn helmet through brief pose drop, "
-                 f"support conf >= {args.helmet_fallback_conf:.2f})"
-                 if args.helmet_worker_fallback else "OFF"))
-        print("[INFO] Helmet debug visuals  : "
-              + ("ON (--show-helmet-debug)" if args.show_helmet_color_debug
-                 else "OFF [clean demo overlay]"))
-        print(f"[INFO] Debug PPE             : {args.debug_ppe}")
-    print(f"[INFO] Event cooldown (s)    : {args.event_cooldown:.1f}")
-    print(f"[INFO] Clear-after (s)       : {args.clear_after:.1f}")
+    person_model = None
+    if args.person_fallback:
+        try:
+            person_model = YOLO(args.person_model)
+        except Exception as exc:
+            print(f"[WARN] Person fallback disabled, could not load model: {exc}")
 
     # --- Open video source --------------------------------------------------
-    print(f"[INFO] Opening source: {source_desc}")
     cap = cv2.VideoCapture(source)
     if not cap.isOpened():
         print(f"[ERROR] Could not open video source: {source_desc}")
@@ -1502,7 +1775,33 @@ def main() -> int:
     in_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)) or 640
     in_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)) or 480
     in_fps = cap.get(cv2.CAP_PROP_FPS) or 0.0
-    print(f"[INFO] Source opened: {in_w}x{in_h} @ {in_fps:.1f} fps (reported)")
+
+    # --- Startup summary ----------------------------------------------------
+    on_off = lambda flag: "ON" if flag else "OFF"   # noqa: E731
+    debug_flags = [name for name, on in (
+        ("--show-helmet-debug", args.show_helmet_color_debug),
+        ("--show-worker-debug", args.show_worker_debug),
+        ("--show-helmet-debug-boxes", args.show_helmet_debug_boxes),
+        ("--show-negative-boxes", args.show_negative_boxes),
+        ("--debug-ppe", args.debug_ppe),
+        ("--strict-vest-matching", args.strict_vest_matching),
+    ) if on]
+    print("=" * 56)
+    print(" SafeVision AI - live PPE detection")
+    print("=" * 56)
+    print(f" PPE model       : {model_path}")
+    print(f" Camera source   : {source_desc} ({in_w}x{in_h})")
+    print(f" PPE conf        : {args.conf:.2f}    pose conf: {args.pose_conf:.2f}")
+    print(f" Person fallback : {on_off(person_model is not None)}"
+          + (f" (conf {args.person_conf:.2f})" if person_model is not None else ""))
+    print(f" Helmet smoothing: "
+          + (f"ON ({args.helmet_hold_frames} frames)" if args.helmet_hold_frames > 0
+             else "OFF"))
+    print(f" Colour assist   : {on_off(args.helmet_color_assist)}")
+    print(f" Debug overlays  : {', '.join(debug_flags) if debug_flags else 'OFF'}")
+    print("-" * 56)
+    print(" Press q in the video window to quit.")
+    print("=" * 56)
 
     # --- Optional video writer ---------------------------------------------
     writer = None
@@ -1556,12 +1855,26 @@ def main() -> int:
                 continue
 
             try:
+                # Predict at a low conf so weak poses can still supply head
+                # keypoints as evidence for the COCO fallback; workers and
+                # helmet anchors still filter at --pose-conf.
                 pose_results = pose_model.predict(
-                    source=frame, conf=args.pose_conf, verbose=False,
+                    source=frame, conf=min(args.pose_conf, POSE_EVIDENCE_CONF),
+                    verbose=False,
                 )
             except Exception as exc:
                 print(f"[WARN] Pose inference failed on a frame: {exc}")
                 pose_results = None
+
+            person_result = None
+            if person_model is not None:
+                try:
+                    person_result = person_model.predict(
+                        source=frame, conf=args.person_conf,
+                        classes=[COCO_PERSON_CLASS], verbose=False,
+                    )[0]
+                except Exception as exc:
+                    print(f"[WARN] Person inference failed on a frame: {exc}")
 
             ppe_result = ppe_results[0]
 
@@ -1574,10 +1887,23 @@ def main() -> int:
             # ---- 2) Valid workers from the pose model ----------------------
             # STRICT workers (3-keypoint gate) drive the HUD worker count, the
             # cyan boxes, and no_helmet inference.
-            workers = (
+            pose_workers = dedupe_person_detections(
                 get_valid_worker_boxes(pose_results[0], args.pose_conf)
                 if pose_results is not None else []
             )
+            # Worker = pose worker OR COCO person (seated / side / partial
+            # people fail the pose keypoint gate but the COCO detector finds
+            # them). Duplicates of the same person are merged.
+            pose_evidence = other_person_poses(
+                get_person_regions(pose_results[0], POSE_EVIDENCE_CONF)
+                if pose_results is not None else [],
+                pose_workers,
+            )
+            coco_persons = filter_coco_persons(
+                get_coco_person_boxes(person_result, args.person_conf),
+                pose_evidence,
+            )
+            workers, worker_sources = merge_workers(pose_workers, coco_persons)
             worker_boxes = [w[0] for w in workers]
             workers_n = len(worker_boxes)
 
@@ -1587,10 +1913,19 @@ def main() -> int:
             # a clearly worn hard hat is detected even when workers_n is 0. Each
             # region gets a tight face/head anchor (face if reliable, else a
             # narrow centred top-of-person fallback) for validate_worn_helmet.
-            person_regions = (
+            person_regions = dedupe_person_detections(
                 get_person_regions(pose_results[0], args.pose_conf)
                 if pose_results is not None else []
             )
+            # COCO-only workers also anchor helmet validation (box-geometry
+            # fallback anchor, since they have no keypoints) -- but only when a
+            # head/shoulder keypoint confirms a real head is in the box, so a
+            # hand-holding-a-helmet box can never make a held helmet "worn".
+            for w, src in zip(workers, worker_sources):
+                if (src == "coco" and has_head_keypoints(w[0], pose_evidence)
+                        and not any(_same_person(w[0], p[0], iou_thr=0.45)
+                                    for p in person_regions)):
+                    person_regions.append(w)
             person_boxes   = [p[0] for p in person_regions]
             person_anchors = [
                 get_face_anchor(p[0], p[2], p[3]) for p in person_regions
@@ -1658,8 +1993,17 @@ def main() -> int:
                 ov  = args.ppe_worker_overlap
                 hov = args.helmet_worker_overlap
 
-                vest_keep    = filter_ppe_by_workers(ppe_boxes["vest"],    worker_boxes, ov)
                 no_vest_keep = filter_ppe_by_workers(ppe_boxes["no_vest"], worker_boxes, ov)
+                # Vest compliance is PER WORKER: every worker gets at most one
+                # vest on their body; a worker with none is no_vest, even if
+                # the model never draws a no_vest box on them.
+                worker_vest = assign_vests_per_worker(worker_boxes, ppe_boxes["vest"])
+                # A hard hat held at the chest is not a vest.
+                worker_vest = [
+                    v if v is None or validate_worn_vest(frame, w, v[0]) else None
+                    for w, v in zip(workers, worker_vest)
+                ]
+                vest_keep = [v for v in worker_vest if v is not None]
 
                 # no_helmet (raw on-head) is kept only for the --no-infer-no-
                 # helmet path and debug; helmet compliance below is worker-based.
@@ -1681,6 +2025,9 @@ def main() -> int:
                 # side-profile / pose-weak worn helmets detect even at workers=0.
                 fh, fw = frame.shape[:2]
                 worker_real = [None] * len(person_boxes)   # per person-region
+                # Per region: helmet candidates seen, but EVERY one rejected
+                # (held / not worn) -> cancels that region's hold.
+                region_rejected = [False] * len(person_boxes)
                 helmet_dbg = []        # (region_i, src, cand, box, verdict, reason)
                 helmet_rejected = []   # reject-verdict boxes  (debug only)
                 helmet_uncertain = []  # uncertain-verdict boxes (debug only)
@@ -1703,8 +2050,18 @@ def main() -> int:
                         else:
                             helmet_uncertain.append(hb)
                     # Colour fallback only where the model accepted nothing here.
+                    # Skip a blob that is the same object as a helmet the model
+                    # just REJECTED as held. (A raw no_helmet box is NOT used to
+                    # veto colour: v5d fires confident no_helmet on some clearly
+                    # worn helmets, and colour assist is what rescues those.)
                     if args.helmet_color_assist and chosen is None:
                         cbox = find_yellow_blob_for_worker(frame, pb, fw, fh)
+                        if cbox is not None and any(
+                            calculate_iou(cbox, rb) >= 0.30 for rb in helmet_rejected
+                        ):
+                            helmet_dbg.append((i, src, "color", cbox, "reject",
+                                               "rejected_color_overruled_by_model"))
+                            cbox = None
                         if cbox is not None:
                             verdict, core = validate_worn_helmet(cbox, pb, face, frame.shape)
                             reason = _accept_reason("color", core) if verdict == "accept" else core
@@ -1717,11 +2074,17 @@ def main() -> int:
                                 helmet_uncertain.append(cbox)
                     if chosen is not None:
                         worker_real[i] = chosen
+                    else:
+                        verdicts = [d[4] for d in helmet_dbg if d[0] == i]
+                        region_rejected[i] = bool(verdicts) and all(
+                            v == "reject" for v in verdicts)
 
                 # Strong helmet detections that may SUPPORT a worker-drop ghost
-                # hold (only those at/above the fallback confidence).
+                # hold (only those at/above the fallback confidence, and never a
+                # helmet a visible person just had rejected as held).
                 support_boxes = [hb for hb, hc in helmet_dets
-                                 if hc >= args.helmet_fallback_conf]
+                                 if hc >= args.helmet_fallback_conf
+                                 and not any(hb is rb for rb in helmet_rejected)]
 
                 # Temporal smoothing over PERSON regions -> per-region helmet
                 # status + ghost holds. An uncertain region (worker_real None but
@@ -1731,24 +2094,26 @@ def main() -> int:
                     person_boxes, worker_real,
                     support_boxes=support_boxes,
                     allow_ghost=args.helmet_worker_fallback,
+                    worker_rejected=region_rejected,
                 )
 
-                # Active worn helmets this frame (accepted/held + ghost).
+                # Active worn helmets this frame (accepted/held + ghost), merged
+                # so one physical helmet never counts twice.
                 active_helmets = [(e[0], e[1]) for e in helmet_status if e is not None]
                 active_helmets += list(helmet_ghosts)
+                active_helmets = dedupe_helmet_boxes(active_helmets)
 
-                # Positive PPE -> always drawn green (demo-safe). Held-over gets
-                # '*', ghost gets '~'; both read as a normal "helmet" box.
-                for entry in helmet_status:
-                    if entry is None:
-                        continue
-                    box, conf, is_held = entry
-                    label = f"helmet {conf:.2f}{'*' if is_held else ''}"
-                    _draw_labeled_box(frame, box, label, HELMET_COLOR)
-                for box, conf in helmet_ghosts:
-                    _draw_labeled_box(frame, box, f"helmet {conf:.2f}~", HELMET_COLOR)
+                # Positive PPE -> always drawn green (demo-safe).
+                # Confidence numbers only in debug mode; the demo shows plain labels.
+                show_conf = args.show_helmet_color_debug or args.show_worker_debug
+                for box, conf in active_helmets:
+                    _draw_labeled_box(frame, box,
+                                      f"helmet {conf:.2f}" if show_conf else "helmet",
+                                      HELMET_COLOR)
                 for box, conf in vest_keep:
-                    _draw_labeled_box(frame, box, f"vest {conf:.2f}", WORN_VEST_COLOR)
+                    _draw_labeled_box(frame, box,
+                                      f"vest {conf:.2f}" if show_conf else "vest",
+                                      WORN_VEST_COLOR)
 
                 # Which STRICT workers have an active worn helmet near the head
                 # (drives no_helmet). Ghost / non-worker helmets never CREATE
@@ -1831,7 +2196,7 @@ def main() -> int:
                         _draw_labeled_box(frame, box, f"raw_no_helmet {conf:.2f}", RAW_NO_HELMET_COLOR)
 
                 vest_worn_n = len(vest_keep)
-                no_vest_n   = len(no_vest_keep)
+                no_vest_n   = workers_n - vest_worn_n   # 0 when no workers
                 # helmet = total active worn helmets across person regions
                 # (accepted + held-over + worker-drop ghost). Can exceed the HUD
                 # worker count when a helmet is worn on a person the strict gate
@@ -1862,8 +2227,22 @@ def main() -> int:
                 # "Missing Helmet" warning text. Negative status is reflected
                 # only in the HUD counts (and as red boxes with
                 # --show-negative-boxes).
-                for w in workers:
-                    _draw_labeled_box(frame, w[0], f"worker {w[1]:.2f}", WORKER_BOX_COLOR)
+                # Every worker gets a cyan box; a worker without a vest gets a
+                # small red "no_vest" tag at the bottom of the box, and a worker
+                # counted as no_helmet in the HUD gets a red "no_helmet" tag
+                # stacked just above it (same per-worker status as the HUD).
+                for i, (w, src, vest) in enumerate(
+                        zip(workers, worker_sources, worker_vest)):
+                    label = (f"worker {src} {w[1]:.2f}" if args.show_worker_debug
+                             else "worker")
+                    _draw_labeled_box(frame, w[0], label, WORKER_BOX_COLOR)
+                    tag_x, tag_y = int(w[0][0]), int(w[0][3])
+                    if vest is None:
+                        tag_y -= _draw_tag(frame, tag_x, tag_y, "no_vest",
+                                           NO_VEST_COLOR, fg=(255, 255, 255)) + 2
+                    if args.infer_no_helmet and not worker_has_helmet[i]:
+                        _draw_tag(frame, tag_x, tag_y, "no_helmet",
+                                  NO_HELMET_COLOR, fg=(255, 255, 255))
 
             # ---- 5) Events: debounced no_vest counter (kept in BOTH modes) -
             # The cooldown/clear-after tracker only changes the `events`
@@ -1932,9 +2311,9 @@ def main() -> int:
             print("WORN only when a vest box overlaps a worker's torso/chest")
             print(f"region (overlap >= {args.vest_overlap:.2f}) and is centred there.")
         else:
-            print("Mode: stable raw-object detection [default]. Vest/no_vest")
-            print("counts are raw PPE detections (demo-safe). Strict per-worker")
-            print("torso matching is available via --strict-vest-matching.")
+            print("Mode: per-worker vest [default]. A worker with a vest box on")
+            print("their body counts as vest, every other worker as no_vest.")
+            print("Strict torso matching is available via --strict-vest-matching.")
         print(f"Events are debounced (clear_after={args.clear_after:.1f}s, "
               f"cooldown={args.event_cooldown:.1f}s).")
         if writer is not None and out_path is not None:
