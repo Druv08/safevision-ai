@@ -62,6 +62,8 @@ class Settings:
     helmet_model_sha256: str
     person_model_path: Path
     person_model_sha256: str
+    fallback_person_model_path: Path
+    use_unified_ai: bool
     upload_dir: Path
 
     @property
@@ -139,6 +141,10 @@ def load_settings() -> Settings:
         helmet_model_sha256=os.getenv("HELMET_MODEL_SHA256", "").strip().lower(),
         person_model_path=weights.resolve("PERSON_MODEL_PATH"),
         person_model_sha256=os.getenv("PERSON_MODEL_SHA256", "").strip().lower(),
+        fallback_person_model_path=weights.resolve("FALLBACK_PERSON_MODEL_PATH"),
+        # The live camera's AI (ai-model/inference/safevision_engine.py) for every detection path.
+        # false = the older pipeline.associate() rules, kept as an explicit fallback only.
+        use_unified_ai=os.getenv("SAFE_USE_UNIFIED_AI", "true").lower() == "true",
         upload_dir=_path("UPLOAD_DIR", BACKEND_DIR / "uploads"),
     )
 

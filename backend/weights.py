@@ -41,6 +41,11 @@ CANDIDATES = {
         PROJECT_ROOT / "yolov8n-pose.pt",
         PROJECT_ROOT / "yolov8n.pt",
     ],
+    # COCO person detector, the unified engine's worker fallback (seated / side /
+    # partial people the pose keypoint gate rejects), as in the live camera.
+    "FALLBACK_PERSON_MODEL_PATH": [
+        PROJECT_ROOT / "yolov8n.pt",
+    ],
 }
 
 

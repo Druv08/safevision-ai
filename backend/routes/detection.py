@@ -13,7 +13,7 @@ from pydantic import BaseModel, Field
 
 from auth import User, require_admin, require_viewer
 from config import settings
-from services.detection_service import detect_image
+from services.detection_service import analyze_camera_frame, analyze_image
 from services.model_service import model_status
 from services.video_detection_service import VideoDecodeError, detect_video
 from services.violations_service import (
@@ -108,6 +108,8 @@ def rate_limit(user: User = Depends(require_viewer)) -> User:
 def detect_image_route(
     image: UploadFile = File(...),
     source: Literal["image", "camera"] = Form("image"),
+    # Browser webcam: frames of one session share tracking, helmet smoothing and the violation window.
+    session: str | None = Form(None, min_length=8, max_length=64, pattern=r"^[A-Za-z0-9_-]+$"),
     user: User = Depends(rate_limit),
 ):
     path = save_upload(image, IMAGE_TYPES)
@@ -115,11 +117,15 @@ def detect_image_route(
         frame = cv2.imread(str(path))
         if frame is None:
             raise HTTPException(status.HTTP_400_BAD_REQUEST, "Could not decode the image.")
-        detections, summary = detect_image(frame, source)
+        if source == "camera" and session:
+            result = analyze_camera_frame(frame, user.id, session)
+        else:
+            result = analyze_image(frame, source)
     finally:
         path.unlink(missing_ok=True)
 
-    return {"filename": image.filename, "detections": detections, "summary": summary}
+    # detections + summary as before; workers / counts / inference_ms added by the unified AI.
+    return {"filename": image.filename, **result}
 
 
 @router.post("/detect-video")

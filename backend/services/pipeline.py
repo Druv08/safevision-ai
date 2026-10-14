@@ -87,6 +87,10 @@ class FrameDets:
     no_helmet: list[Det] = field(default_factory=list)
     vest: list[Det] = field(default_factory=list)
     no_vest: list[Det] = field(default_factory=list)
+    # Set by the unified engine (services/unified_ai.py): per person, parallel to
+    # `persons`, {item: (state, Det)} already decided by the live camera's rules.
+    # When set, Pipeline uses it instead of associate().
+    decisions: list[dict] | None = None
 
 
 @dataclass
@@ -336,6 +340,25 @@ def associate(dets: FrameDets) -> tuple[list[PersonStatus], list[tuple[int, Det]
     return statuses, labelled
 
 
+def from_decisions(dets: FrameDets) -> tuple[list[PersonStatus], list[tuple[int, Det]]]:
+    """(statuses, labelled) from the unified engine's per-worker decisions.
+
+    Same shape as associate(): a worn item is labelled helmet / vest on its box,
+    a missing one no_helmet / no_vest on the worker's head / torso, so every
+    worker without the item gets its own red box.
+    """
+    ids = {"helmet": (HELMET_ID, NO_HELMET_ID), "vest": (VEST_ID, NO_VEST_ID)}
+    statuses, labelled = [], [(PERSON_ID, Det(p.box, p.conf)) for p in dets.persons]
+    for p, decided in zip(dets.persons, dets.decisions, strict=True):
+        items = {}
+        for item in ITEMS:
+            state, d = decided[item]
+            items[item] = ItemStatus(state, d.conf, [d])
+            labelled.append((ids[item][0] if state == WORN else ids[item][1], d))
+        statuses.append(PersonStatus(p, head_region(p), torso_region(p), items))
+    return statuses, labelled
+
+
 def summarize(statuses: list[PersonStatus]) -> dict:
     """Per-frame counts in the shape the API has always returned."""
     def worn(item):
@@ -425,7 +448,7 @@ class Pipeline:
         if self.tracker is None:
             for i, p in enumerate(dets.persons, start=1):
                 p.track_id = i
-        statuses, labelled = associate(dets)
+        statuses, labelled = associate(dets) if dets.decisions is None else from_decisions(dets)
         result = FrameResult(t, statuses, labelled, [], [], [])
         cfg = self.cfg
         if frame is not None:
