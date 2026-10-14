@@ -72,3 +72,10 @@ ai-model/outputs/violations/violations_log.csv
 *.jpeg
 *.png
 *.csv
+
+# Test / lint caches
+.pytest_cache/
+.ruff_cache/
+
+# Local dev storage when DB_DISABLED=true (never committed)
+backend/local-data/

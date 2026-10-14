@@ -21,7 +21,7 @@ FastAPI Backend     (receives + processes detections)
 Supabase Database + Storage  (violation records + screenshot URLs)
         │
         ▼
-Next.js Dashboard   (live list of violations, filters)
+React + Vite Dashboard (violations list, filters)
         │
         ▼
 Safety Report       (summary view / exportable report)
@@ -33,4 +33,4 @@ Safety Report       (summary view / exportable report)
 - **Violation Logic** — Python rules that decide when a frame is a violation.
 - **FastAPI Backend** — REST API, handles uploads and forwards data to Supabase.
 - **Supabase** — Postgres DB for violation rows + Storage bucket for screenshots.
-- **Next.js Dashboard** — UI for viewing violations and generating reports.
+- **React + Vite Dashboard** — UI for viewing, filtering, acknowledging and exporting violations. Login via Supabase Auth.

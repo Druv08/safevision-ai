@@ -3,375 +3,261 @@
 @custom-variant dark (&:where(.dark, .dark *));
 
 /* ══════════════════════════════════════════════════════════════
-   SafeVisionAI — industrial theme (landing page)
-   Palette: Deep Green #1B4436 · Gold #E2A442 · Off-white #F7F0EB
+   SafeVisionAI design tokens
+   Dark industrial theme by default; `html.light` swaps the values.
+   Every colour in the app comes from here — pages use the Tailwind
+   names below (bg-surface, text-muted, border-line, text-danger …).
    ══════════════════════════════════════════════════════════════ */
 :root {
-  /* Fixed brand hues — identical in both themes */
-  --sv-abyss:  #08150F;
-  --sv-deeper: #0E2419;
-  --sv-deep:   #1B4436;
-  --sv-moss:   #27604B;
-  --sv-gold:   #E2A442;
-  --sv-cream:  #F7F0EB;
-  --sv-ok:     #5FD08A;
-  --sv-alert:  #F2593F;
-}
-
-/* ══════════════════════════════════════════════════════════════
-   Semantic tokens — the only thing the theme toggle swaps.
-   Dark is the default and carries the exact values the design
-   already shipped with, so toggling can never alter dark mode.
-   ══════════════════════════════════════════════════════════════ */
-:root,
-:root.dark {
-  --sv-bg:          #08150F;
-  --sv-bg-elev:     rgba(8, 21, 15, 0.82);
-  --sv-surface:     rgba(14, 36, 25, 0.55);
-  --sv-surface-sub: rgba(247, 240, 235, 0.035);
-  --sv-border:      rgba(247, 240, 235, 0.09);
-  --sv-border-2:    rgba(247, 240, 235, 0.18);
-
-  --sv-fg:          #F7F0EB;
-  --sv-fg-muted:    rgba(247, 240, 235, 0.55);
-  --sv-fg-dim:      rgba(247, 240, 235, 0.42);
-  --sv-fg-faint:    rgba(247, 240, 235, 0.28);
-
-  /* accent-ink = the accent used as *text*; it darkens on light
-     backgrounds where the raw brand hue would fail contrast. */
-  --sv-accent:      #E2A442;
-  --sv-accent-ink:  #E2A442;
-  --sv-on-accent:   #1B2410;
-  --sv-ok-ink:      #5FD08A;
-  --sv-alert-ink:   #F2593F;
-
-  /* Severity badge text — the lighter tints the dark design ships with */
-  --sv-sev-critical: #FF8B76;
-  --sv-sev-high:     #F5A177;
-  --sv-sev-medium:   #F0C77E;
-
-  --sv-shadow:      0 24px 60px -20px rgba(0, 0, 0, 0.85);
-  --sv-logo-grad:   linear-gradient(150deg, #27604B, #1B4436);
-  --sv-scroll-thumb: rgba(39, 96, 75, 0.8);
+  --canvas:      #0B0F0E;
+  --sidebar:     #101613;
+  --surface:     #151D19;
+  --surface-2:   #1A241F;
+  --line:        #27332C;
+  --line-strong: #36453C;
+  --fg:          #F3F7F4;
+  --muted:       #9BAAA1;
+  --subtle:      #74847A;
+  --primary:     #36D399;
+  --primary-hover: #5BE0AD;
+  --on-primary:  #04160E;
+  --warning:     #F5B942;
+  --danger:      #F26B6B;
+  --info:        #60A5FA;
+  --shadow:      0 1px 0 rgba(255, 255, 255, 0.03) inset, 0 12px 32px -16px rgba(0, 0, 0, 0.7);
   color-scheme: dark;
 }
 
 :root.light {
-  --sv-bg:          #E9E1D6;
-  --sv-bg-elev:     rgba(251, 247, 242, 0.9);
-  --sv-surface:     rgba(251, 247, 242, 0.92);
-  --sv-surface-sub: rgba(27, 68, 54, 0.055);
-  --sv-border:      rgba(27, 68, 54, 0.16);
-  --sv-border-2:    rgba(27, 68, 54, 0.3);
-
-  --sv-fg:          #10231A;
-  --sv-fg-muted:    rgba(16, 35, 26, 0.66);
-  --sv-fg-dim:      rgba(16, 35, 26, 0.5);
-  --sv-fg-faint:    rgba(16, 35, 26, 0.34);
-
-  --sv-accent:      #E2A442;
-  --sv-accent-ink:  #8A5A12;
-  --sv-on-accent:   #1B2410;
-  --sv-ok-ink:      #1B7A45;
-  --sv-alert-ink:   #B33A1E;
-
-  /* Darkened so badge text stays legible on a cream tint */
-  --sv-sev-critical: #A32E15;
-  --sv-sev-high:     #8E3D12;
-  --sv-sev-medium:   #7A4E0A;
-
-  --sv-shadow:      0 20px 45px -22px rgba(27, 68, 54, 0.4);
-  --sv-logo-grad:   linear-gradient(150deg, #27604B, #1B4436);
-  --sv-scroll-thumb: rgba(27, 68, 54, 0.35);
+  --canvas:      #F4F6F5;
+  --sidebar:     #FFFFFF;
+  --surface:     #FFFFFF;
+  --surface-2:   #EEF2F0;
+  --line:        #DCE3DF;
+  --line-strong: #C3CEC8;
+  --fg:          #0E1512;
+  --muted:       #52615A;
+  --subtle:      #6B7A72;
+  --primary:     #0C8A5D;
+  --primary-hover: #0A7550;
+  --on-primary:  #FFFFFF;
+  --warning:     #A86A00;
+  --danger:      #C92A2A;
+  --info:        #1D5FD6;
+  --shadow:      0 1px 2px rgba(16, 24, 20, 0.06), 0 8px 24px -12px rgba(16, 24, 20, 0.12);
   color-scheme: light;
 }
 
-.sv-root {
-  font-family: "Hanken Grotesk", ui-sans-serif, system-ui, sans-serif;
-  font-feature-settings: "ss01", "cv01";
-}
-.sv-mono { font-family: "JetBrains Mono", ui-monospace, "SFMono-Regular", monospace; }
+@theme inline {
+  --font-sans: "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, "SFMono-Regular", Consolas, monospace;
 
-/* ── Hero background stack ────────────────────────────── */
-/* Fallback industrial ground — always painted, so a missing
-   /image.png degrades into an intentional-looking scene.     */
-.sv-hero-ground {
-  background-color: var(--sv-abyss);
-  background-image:
-    radial-gradient(ellipse 70% 55% at 22% 18%, rgba(39, 96, 75, 0.55), transparent 68%),
-    radial-gradient(ellipse 55% 45% at 82% 72%, rgba(27, 68, 54, 0.45), transparent 70%),
-    linear-gradient(160deg, #0E2419 0%, #08150F 100%);
-}
-/* Tuned for a bright daylight site photo: knocked well down in
-   brightness and saturation so the gold/cream type stays legible. */
-.sv-hero-photo {
-  background-image: url("/bg1.png");
-  background-size: cover;
-  background-position: center 58%;
-  filter: saturate(0.38) contrast(1.12) brightness(0.34);
-}
-/* The dark-green wash that unifies photo + fallback */
-.sv-hero-tint {
-  background:
-    linear-gradient(
-      180deg,
-      rgba(8, 21, 15, 0.86) 0%,
-      rgba(27, 68, 54, 0.8) 38%,
-      rgba(8, 21, 15, 0.94) 78%,
-      rgba(8, 21, 15, 1) 100%
-    ),
-    radial-gradient(ellipse 85% 70% at 20% 34%, rgba(27, 68, 54, 0.66), transparent 74%);
-}
-.sv-grid {
-  background-image:
-    linear-gradient(rgba(247, 240, 235, 0.045) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(247, 240, 235, 0.045) 1px, transparent 1px);
-  background-size: 64px 64px;
-  -webkit-mask-image: radial-gradient(ellipse 70% 60% at 50% 40%, #000 20%, transparent 78%);
-  mask-image: radial-gradient(ellipse 70% 60% at 50% 40%, #000 20%, transparent 78%);
-}
-.sv-grain {
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='3'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.5'/%3E%3C/svg%3E");
-  opacity: 0.05;
-  mix-blend-mode: overlay;
+  --color-canvas: var(--canvas);
+  --color-sidebar: var(--sidebar);
+  --color-surface: var(--surface);
+  --color-surface-2: var(--surface-2);
+  --color-line: var(--line);
+  --color-line-strong: var(--line-strong);
+  --color-fg: var(--fg);
+  --color-muted: var(--muted);
+  --color-subtle: var(--subtle);
+  --color-primary: var(--primary);
+  --color-primary-hover: var(--primary-hover);
+  --color-on-primary: var(--on-primary);
+  --color-warning: var(--warning);
+  --color-danger: var(--danger);
+  --color-info: var(--info);
 }
 
-/* ── Live feed panel ──────────────────────────────────── */
-/* Reads as live footage, so it keeps far more brightness than the
-   hero plate — just graded cooler/darker to sit in the palette.
-   `cover` on a 16/9 frame crops the source to its middle ~82%;
-   the DetectionBox coordinates in Landing.jsx assume that crop. */
-.sv-feed-scene {
-  background-image: url("/bg1.png");
-  background-size: cover;
-  background-position: center center;
-  filter: saturate(0.62) contrast(1.1) brightness(0.62) hue-rotate(-6deg);
+/* ── Base ─────────────────────────────────────────────────── */
+html { background: var(--canvas); }
+body {
+  margin: 0;
+  background: var(--canvas);
+  color: var(--fg);
+  font-family: var(--font-sans);
+  font-feature-settings: "cv11", "ss01";
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
 }
-.sv-feed-fallback {
-  background:
-    linear-gradient(180deg, #123026 0%, #0A1B14 62%, #06110C 100%),
-    radial-gradient(ellipse 40% 30% at 68% 22%, rgba(226, 164, 66, 0.28), transparent 70%);
-}
-.sv-scanline::after {
-  content: "";
-  position: absolute;
-  inset-inline: 0;
-  top: 0;
-  height: 18%;
-  will-change: transform;
-  background: linear-gradient(180deg, transparent, rgba(95, 208, 138, 0.14), transparent);
-  animation: sv-scan 4.5s cubic-bezier(0.45, 0, 0.55, 1) infinite;
-}
-.sv-crt {
-  background-image: repeating-linear-gradient(
-    180deg, rgba(0, 0, 0, 0.22) 0px, rgba(0, 0, 0, 0.22) 1px, transparent 1px, transparent 3px
-  );
-  opacity: 0.45;
-}
+::selection { background: color-mix(in srgb, var(--primary) 30%, transparent); }
 
-/* ── Accents ──────────────────────────────────────────── */
-.sv-gold-text {
-  background: linear-gradient(96deg, #E2A442 0%, #F3CE86 44%, #E2A442 100%);
-  background-size: 220% auto;
-  -webkit-background-clip: text;
-  background-clip: text;
-  -webkit-text-fill-color: transparent;
-  animation: sv-sheen 6s linear infinite;
-}
-.sv-gold-btn {
-  background: linear-gradient(180deg, #EBB55C 0%, #E2A442 55%, #C88C2E 100%);
-  box-shadow:
-    0 1px 0 rgba(255, 255, 255, 0.35) inset,
-    0 10px 30px -8px rgba(226, 164, 66, 0.55),
-    0 0 0 1px rgba(226, 164, 66, 0.35);
-}
-.sv-gold-btn:hover {
-  box-shadow:
-    0 1px 0 rgba(255, 255, 255, 0.45) inset,
-    0 14px 40px -8px rgba(226, 164, 66, 0.7),
-    0 0 0 1px rgba(226, 164, 66, 0.5);
-}
-.sv-glass {
-  background: rgba(14, 36, 25, 0.62);
-  -webkit-backdrop-filter: blur(14px);
-  backdrop-filter: blur(14px);
-  border: 1px solid rgba(247, 240, 235, 0.1);
-}
-.sv-hairline { border-color: rgba(247, 240, 235, 0.1); }
-
-/* ── App shell (dashboard pages) ──────────────────────── */
-.sv-app {
-  background-color: var(--sv-bg);
-  color: var(--sv-fg);
-  font-family: "Hanken Grotesk", ui-sans-serif, system-ui, sans-serif;
-  transition: background-color 0.3s ease, color 0.3s ease;
-}
-.sv-chrome {
-  background: var(--sv-bg-elev);
-  -webkit-backdrop-filter: blur(16px);
-  backdrop-filter: blur(16px);
-}
-/* Card surface */
-.sv-panel {
-  background: var(--sv-surface);
-  border: 1px solid var(--sv-border);
-}
-/* Nested surface inside a .sv-panel */
-.sv-panel-sub {
-  background: var(--sv-surface-sub);
-  border: 1px solid var(--sv-border);
-}
-.sv-btn-ghost {
-  border: 1px solid var(--sv-border-2);
-  background: var(--sv-surface-sub);
-  transition: background 0.25s ease, border-color 0.25s ease;
-}
-.sv-btn-ghost:hover { border-color: var(--sv-accent); }
-.sv-dropzone {
-  border: 2px dashed var(--sv-border-2);
-  transition: border-color 0.25s ease, background 0.25s ease;
-}
-.sv-dropzone:hover {
-  border-color: color-mix(in srgb, var(--sv-accent) 55%, transparent);
-  background: color-mix(in srgb, var(--sv-accent) 7%, transparent);
-}
-/* Active (recording) counterpart of .sv-dropzone. Needs its own rule
-   because .sv-tone's shorthand `border` would override Tailwind's
-   border-2/border-dashed utilities. */
-.sv-dropzone-active {
-  border: 2px dashed color-mix(in srgb, var(--tone) 55%, transparent);
-  background: color-mix(in srgb, var(--tone) 11%, transparent);
-  color: var(--tone-ink);
-}
-.sv-shadow { box-shadow: var(--sv-shadow); }
-.sv-logo-tile {
-  background: var(--sv-logo-grad);
-  border: 1px solid color-mix(in srgb, var(--sv-accent) 38%, transparent);
-}
-
-/* ── Token-driven text + border utilities ─────────────── */
-.sv-fg       { color: var(--sv-fg); }
-.sv-fg-muted { color: var(--sv-fg-muted); }
-.sv-fg-dim   { color: var(--sv-fg-dim); }
-.sv-fg-faint { color: var(--sv-fg-faint); }
-.sv-ink-gold  { color: var(--sv-accent-ink); }
-.sv-ink-ok    { color: var(--sv-ok-ink); }
-.sv-ink-alert { color: var(--sv-alert-ink); }
-.sv-bd    { border-color: var(--sv-border); }
-.sv-bd-b  { border-bottom: 1px solid var(--sv-border); }
-.sv-bd-t  { border-top: 1px solid var(--sv-border); }
-.sv-bd-r  { border-right: 1px solid var(--sv-border); }
-.sv-row   { border-bottom: 1px solid color-mix(in srgb, var(--sv-border) 65%, transparent); }
-.sv-row:hover { background: var(--sv-surface-sub); }
-
-/* Interactive items whose hover state has to follow the tokens.
-   Tailwind's hover: variant only wraps Tailwind-generated
-   utilities, so these need real CSS rules. */
-.sv-navitem {
-  color: var(--sv-fg-muted);
-  border-color: transparent;
-  transition: color 0.2s ease, background 0.2s ease, border-color 0.2s ease;
-}
-.sv-navitem:hover {
-  color: var(--sv-fg);
-  background: var(--sv-surface-sub);
-}
-.sv-linkish { color: var(--sv-fg-muted); transition: color 0.2s ease; }
-.sv-linkish:hover { color: var(--sv-fg); }
-.sv-panel-hover { transition: border-color 0.3s ease; }
-.sv-panel-hover:hover { border-color: color-mix(in srgb, var(--sv-accent) 40%, transparent); }
-
-/* Row deep-linked from the dashboard */
-.sv-row-highlight {
-  background: color-mix(in srgb, var(--sv-accent) 14%, transparent);
-  box-shadow: inset 3px 0 0 var(--sv-accent);
-}
-.sv-row-highlight:hover {
-  background: color-mix(in srgb, var(--sv-accent) 18%, transparent);
-}
-
-.sv-lightbox {
-  background: color-mix(in srgb, var(--sv-bg) 92%, transparent);
-  -webkit-backdrop-filter: blur(6px);
-  backdrop-filter: blur(6px);
-}
-
-/* ── Tonal blocks (stat cards, chips, banners) ────────── */
-/* A tone class sets --tone/--tone-ink; the shape classes below
-   derive every fill, border and text colour from those two, so
-   one class swap re-themes the whole element.                 */
-.tone-gold    { --tone: var(--sv-gold);  --tone-ink: var(--sv-accent-ink); }
-.tone-ok      { --tone: var(--sv-ok);    --tone-ink: var(--sv-ok-ink); }
-.tone-alert   { --tone: var(--sv-alert); --tone-ink: var(--sv-alert-ink); }
-.tone-neutral { --tone: var(--sv-fg);    --tone-ink: var(--sv-fg); }
-
-/* Severity badges keep their own ink so the dark design is untouched */
-.sev-critical { --tone: var(--sv-alert); --tone-ink: var(--sv-sev-critical); }
-.sev-high     { --tone: #E8763F;         --tone-ink: var(--sv-sev-high); }
-.sev-medium   { --tone: var(--sv-gold);  --tone-ink: var(--sv-sev-medium); }
-
-.sv-tone {
-  background: color-mix(in srgb, var(--tone) 11%, transparent);
-  border: 1px solid color-mix(in srgb, var(--tone) 30%, transparent);
-}
-.sv-tone-strong {
-  background: color-mix(in srgb, var(--tone) 14%, transparent);
-  border: 1px solid color-mix(in srgb, var(--tone) 45%, transparent);
-}
-.sv-tone-ink { color: var(--tone-ink); }
-.sv-tone-dot { background: var(--tone-ink); }
-
-/* Themed scrollbars so the chrome matches the palette */
-.sv-app *::-webkit-scrollbar { width: 10px; height: 10px; }
-.sv-app *::-webkit-scrollbar-track { background: var(--sv-surface-sub); }
-.sv-app *::-webkit-scrollbar-thumb {
-  background: var(--sv-scroll-thumb);
+:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
   border-radius: 6px;
-  border: 2px solid transparent;
-  background-clip: padding-box;
-}
-.sv-app *::-webkit-scrollbar-thumb:hover {
-  background: color-mix(in srgb, var(--sv-accent) 65%, transparent);
-  background-clip: padding-box;
 }
 
-/* ── Scroll reveal ────────────────────────────────────── */
-.sv-reveal {
-  opacity: 0;
-  transform: translateY(26px);
-  transition: opacity 0.85s cubic-bezier(0.16, 1, 0.3, 1),
-              transform 0.85s cubic-bezier(0.16, 1, 0.3, 1);
-}
-.sv-reveal.sv-in { opacity: 1; transform: none; }
-
-/* ── Keyframes ────────────────────────────────────────── */
-@keyframes sv-scan {
-  0%   { transform: translateY(-100%); }
-  100% { transform: translateY(560%); }
-}
-@keyframes sv-sheen {
-  0%   { background-position: 0% center; }
-  100% { background-position: 220% center; }
-}
-@keyframes sv-blink {
-  0%, 100% { opacity: 1; }
-  50%      { opacity: 0.25; }
-}
-@keyframes sv-drift {
-  0%, 100% { transform: translateY(0) }
-  50%      { transform: translateY(-12px) }
-}
-@keyframes sv-box-in {
-  from { opacity: 0; transform: scale(0.94); }
-  to   { opacity: 1; transform: scale(1); }
-}
-@keyframes sv-alert-pulse {
-  0%, 100% { box-shadow: 0 0 0 0 rgba(242, 89, 63, 0.45); }
-  50%      { box-shadow: 0 0 0 7px rgba(242, 89, 63, 0); }
-}
+*::-webkit-scrollbar { width: 10px; height: 10px; }
+*::-webkit-scrollbar-track { background: transparent; }
+*::-webkit-scrollbar-thumb { background: var(--line); border-radius: 999px; border: 2px solid var(--canvas); }
+*::-webkit-scrollbar-thumb:hover { background: var(--line-strong); }
 
 @media (prefers-reduced-motion: reduce) {
-  .sv-reveal { opacity: 1; transform: none; transition: none; }
-  .sv-scanline::after,
-  .sv-gold-text { animation: none; }
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
 }
+
+/* ── Components ───────────────────────────────────────────── */
+@layer components {
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    box-shadow: var(--shadow);
+  }
+
+  /* Buttons: .btn + one variant, optional .btn-sm / .btn-icon */
+  .btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.5rem;
+    height: 2.25rem;
+    padding: 0 0.875rem;
+    border-radius: 8px;
+    border: 1px solid transparent;
+    font-size: 0.875rem;
+    font-weight: 500;
+    line-height: 1;
+    white-space: nowrap;
+    cursor: pointer;
+    user-select: none;
+    transition: background-color 120ms, border-color 120ms, color 120ms, opacity 120ms;
+  }
+  .btn:disabled { opacity: 0.45; cursor: not-allowed; }
+  .btn svg { flex-shrink: 0; font-size: 1rem; }
+  .btn-sm { height: 2rem; padding: 0 0.625rem; font-size: 0.8125rem; }
+  .btn-lg { height: 2.75rem; padding: 0 1.25rem; font-size: 0.9375rem; }
+  .btn-icon { width: 2.25rem; padding: 0; }
+  .btn-sm.btn-icon { width: 2rem; }
+
+  .btn-primary { background: var(--primary); color: var(--on-primary); font-weight: 600; }
+  .btn-primary:not(:disabled):hover { background: var(--primary-hover); }
+  .btn-secondary { background: var(--surface-2); border-color: var(--line); color: var(--fg); }
+  .btn-secondary:not(:disabled):hover { border-color: var(--line-strong); background: color-mix(in srgb, var(--surface-2) 70%, var(--line)); }
+  .btn-ghost { background: transparent; color: var(--muted); }
+  .btn-ghost:not(:disabled):hover { background: var(--surface-2); color: var(--fg); }
+  .btn-danger { background: color-mix(in srgb, var(--danger) 14%, transparent); border-color: color-mix(in srgb, var(--danger) 35%, transparent); color: var(--danger); }
+  .btn-danger:not(:disabled):hover { background: color-mix(in srgb, var(--danger) 22%, transparent); }
+
+  /* Form controls */
+  .input {
+    height: 2.25rem;
+    width: 100%;
+    padding: 0 0.75rem;
+    border-radius: 8px;
+    background: var(--canvas);
+    border: 1px solid var(--line);
+    color: var(--fg);
+    font-size: 0.875rem;
+    transition: border-color 120ms, box-shadow 120ms;
+  }
+  textarea.input { height: auto; padding: 0.5rem 0.75rem; line-height: 1.5; }
+  .input::placeholder { color: var(--subtle); }
+  .input:hover { border-color: var(--line-strong); }
+  .input:focus { outline: none; border-color: var(--primary); box-shadow: 0 0 0 3px color-mix(in srgb, var(--primary) 22%, transparent); }
+  select.input { padding-right: 2rem; cursor: pointer; }
+  .label { display: block; font-size: 0.75rem; font-weight: 500; color: var(--muted); margin-bottom: 0.375rem; }
+
+  /* Badges: .badge + a tone */
+  .badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.375rem;
+    height: 1.375rem;
+    padding: 0 0.5rem;
+    border-radius: 6px;
+    font-size: 0.75rem;
+    font-weight: 500;
+    white-space: nowrap;
+    color: var(--tone, var(--muted));
+    background: color-mix(in srgb, var(--tone, var(--muted)) 12%, transparent);
+    border: 1px solid color-mix(in srgb, var(--tone, var(--muted)) 26%, transparent);
+  }
+  .tone-ok      { --tone: var(--primary); }
+  .tone-warning { --tone: var(--warning); }
+  .tone-danger  { --tone: var(--danger); }
+  .tone-info    { --tone: var(--info); }
+  .tone-neutral { --tone: var(--muted); }
+  .dot { width: 0.375rem; height: 0.375rem; border-radius: 999px; background: var(--tone, var(--muted)); flex-shrink: 0; }
+
+  /* Tables */
+  /* relative: keeps absolutely positioned children (sr-only text) inside the scroll wrapper */
+  .table { position: relative; width: 100%; font-size: 0.875rem; border-collapse: collapse; }
+  .table th {
+    text-align: left;
+    font-size: 0.75rem;
+    font-weight: 500;
+    color: var(--muted);
+    padding: 0.625rem 1rem;
+    border-bottom: 1px solid var(--line);
+    white-space: nowrap;
+  }
+  .table td { padding: 0.75rem 1rem; border-bottom: 1px solid var(--line); vertical-align: middle; }
+  .table tbody tr:last-child td { border-bottom: 0; }
+  .table tbody tr { transition: background-color 120ms; }
+  .table tbody tr:hover { background: color-mix(in srgb, var(--surface-2) 70%, transparent); }
+
+  /* Loading skeleton */
+  .skeleton {
+    border-radius: 6px;
+    background: linear-gradient(90deg, var(--surface-2) 0%, color-mix(in srgb, var(--surface-2) 55%, var(--line)) 50%, var(--surface-2) 100%);
+    background-size: 200% 100%;
+    animation: sv-shimmer 1.4s ease-in-out infinite;
+  }
+
+  /* Tooltip for icon-only controls: <button data-tip="Refresh"> */
+  [data-tip] { position: relative; }
+  [data-tip]::after {
+    content: attr(data-tip);
+    position: absolute;
+    z-index: 60;
+    pointer-events: none;
+    white-space: nowrap;
+    font-size: 0.75rem;
+    font-weight: 500;
+    padding: 0.3rem 0.5rem;
+    border-radius: 6px;
+    background: var(--fg);
+    color: var(--canvas);
+    display: none; /* hidden tooltips must not widen the page */
+    top: calc(100% + 6px);
+    left: 50%;
+    transform: translateX(-50%);
+  }
+  [data-tip][data-tip-side="right"]::after { top: 50%; left: calc(100% + 8px); transform: translateY(-50%); }
+  [data-tip][data-tip-align="end"]::after { left: auto; right: 0; transform: none; }
+  [data-tip]:hover::after, [data-tip]:focus-visible::after { display: block; animation: sv-tip-in 120ms ease-out 250ms both; }
+
+  /* Native <dialog> */
+  dialog.modal {
+    margin: auto; /* preflight zeroes margins, which breaks native dialog centring */
+    padding: 0;
+    border: 1px solid var(--line);
+    border-radius: 14px;
+    background: var(--surface);
+    color: var(--fg);
+    box-shadow: 0 30px 80px -20px rgba(0, 0, 0, 0.6);
+    width: min(100% - 2rem, var(--modal-w, 32rem));
+    max-height: calc(100dvh - 2rem);
+  }
+  dialog.modal[open] { animation: sv-pop 140ms ease-out; }
+  dialog.modal::backdrop { background: rgba(4, 8, 6, 0.65); backdrop-filter: blur(3px); }
+
+  .eyebrow { font-size: 0.75rem; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: var(--primary); }
+}
+
+@keyframes sv-shimmer { from { background-position: 200% 0; } to { background-position: -200% 0; } }
+@keyframes sv-tip-in { from { opacity: 0; } to { opacity: 1; } }
+@keyframes sv-pop { from { opacity: 0; transform: translateY(6px) scale(0.98); } to { opacity: 1; transform: none; } }
+@keyframes sv-fade-up { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: none; } }
+@keyframes sv-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
+@keyframes sv-indeterminate { from { transform: translateX(-100%); } to { transform: translateX(250%); } }
+
+.animate-fade-up { animation: sv-fade-up 500ms ease-out both; }
+.animate-live { animation: sv-pulse 1.6s ease-in-out infinite; }

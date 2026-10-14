@@ -233,7 +233,7 @@ All 4 new CSV rows have `worker_detected=yes`. Annotated MP4 still written to `a
   - `POST /api/detect-video`   (multipart upload, allowed: .mp4 .avi .mov .mkv)
   - `GET  /api/violations`
   - Uploaded filenames are rewritten as `<utc-timestamp>_<uuid4-hex>.<ext>` so untrusted client names never land on disk.
-  - Allowed-extension whitelist enforced on every upload.
+  - Allowed-extension whitelist enforced on every upload. *(Correction: this was not actually in the shipped code; it is enforced since the Oct 2026 Supabase/security rework, see research-log 15.4.)*
   - Model / inference errors surface as `503` so the client can tell server-side dependency problems apart from bad input.
 - `backend/results/.gitkeep` added; `.gitignore` extended with `backend/results/*` (matching the existing `backend/uploads/*` rule).
 
